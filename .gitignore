@@ -1,0 +1,64 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python cache / build
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local env/config secrets
+.env
+.env.*
+
+# Logs / temp
+*.log
+*.tmp
+*.bak
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ML artifacts (large/generated)
+datasets/
+models/
+outputs/
+runs/
+wandb/
+mlruns/
+tensorboard/
+
+# Large model/weights/checkpoints
+*.pt
+*.pth
+*.onnx
+*.engine
+*.ckpt
+*.weights
+*.h5
+
+# Media and generated videos
+videos/
+*.mp4
+*.avi
+*.mov
+*.mkv

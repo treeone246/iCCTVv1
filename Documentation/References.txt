@@ -1,0 +1,9 @@
+https://github.com/ultralytics/ultralytics/blob/main/docs/en/tasks/pose.md
+
+https://link.springer.com/article/10.1007/s42452-025-08001-1
+
+https://arxiv.org/abs/1801.07455
+
+https://arxiv.org/abs/2001.07685
+
+https://digitalinnovationlab.github.io/mppdataset
