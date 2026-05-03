@@ -39,8 +39,6 @@ ENV/
 .ipynb_checkpoints/
 
 # ML artifacts (large/generated)
-datasets/
-models/
 outputs/
 runs/
 wandb/
@@ -55,6 +53,11 @@ tensorboard/
 *.ckpt
 *.weights
 *.h5
+
+# Keep LSTM model artifacts trackable
+!models/
+!models/*.pt
+!models/*.json
 
 # Media and generated videos
 videos/

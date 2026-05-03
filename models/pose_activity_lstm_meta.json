@@ -1,0 +1,27 @@
+{
+  "data_json": "datasets/pose_dummy_drilling_activity_v2.json",
+  "window_size": 32,
+  "stride": 4,
+  "min_kpt_conf": 0.2,
+  "labels": [
+    "bending",
+    "crouching",
+    "drilling_operation",
+    "falling",
+    "lying",
+    "manual_working",
+    "pipe_handling",
+    "sitting",
+    "standing",
+    "walking"
+  ],
+  "device": "cpu",
+  "supervised_windows": 900,
+  "unlabeled_windows": 360,
+  "train_windows": 720,
+  "val_windows": 180,
+  "best_val_acc": 0.9666666666666667,
+  "pseudo_enabled": true,
+  "pseudo_added": 93,
+  "output_model": "models\\pose_activity_lstm.pt"
+}

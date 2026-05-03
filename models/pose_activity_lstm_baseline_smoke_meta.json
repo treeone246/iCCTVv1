@@ -1,0 +1,21 @@
+{
+  "data_json": "datasets/pose_dummy_drilling_activity_v2.json",
+  "label_scope": "baseline",
+  "window_size": 24,
+  "stride": 8,
+  "min_kpt_conf": 0.2,
+  "labels": [
+    "accident",
+    "not_working",
+    "working"
+  ],
+  "device": "cpu",
+  "supervised_windows": 720,
+  "unlabeled_windows": 288,
+  "train_windows": 576,
+  "val_windows": 144,
+  "best_val_acc": 0.6597222222222222,
+  "pseudo_enabled": false,
+  "pseudo_added": 0,
+  "output_model": "models\\pose_activity_lstm_baseline_smoke.pt"
+}

@@ -1,0 +1,19 @@
+{
+  "data_root": "datasets\\pose_sessions",
+  "window_size": 20,
+  "stride": 5,
+  "min_kpt_conf": 0.2,
+  "test_size": 0.2,
+  "random_seed": 42,
+  "n_features": 1717,
+  "labels": [
+    "fainted",
+    "falling",
+    "running",
+    "sleeping",
+    "working"
+  ],
+  "train_windows": 256,
+  "test_windows": 64,
+  "model_path": "models\\pose_state_baseline.pkl"
+}
