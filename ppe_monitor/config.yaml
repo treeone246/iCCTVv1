@@ -1,0 +1,56 @@
+video:
+  source: "C:/iCCTVv1/ppe_monitor/videos/simulationTest2.mp4"
+  target_fps: 20
+  drop_grab_limit: 3
+
+models:
+  pose: models/yolo26n-pose.onnx
+  ppe: models/best.onnx
+  verifier: models/yoloe-ppe.onnx
+  allow_mock_models: true
+
+inference:
+  device: auto
+  conf_threshold_pose: 0.40
+  conf_threshold_ppe: 0.35
+  conf_threshold_verifier: 0.45
+  keypoint_conf_floor: 0.40
+  imgsz: 640
+
+association:
+  keypoint_conf_floor: 0.40
+  held_distance_ratio: 1.2
+  held_items: [helmet, goggles, gloves]
+  helmet_keypoints: [nose, left_eye, right_eye]
+  goggles_keypoints: [left_eye, right_eye]
+  gloves_keypoints: [left_wrist, right_wrist]
+  boots_keypoints: [left_ankle, right_ankle]
+  coverall_keypoints: [left_shoulder, right_shoulder, left_hip, right_hip]
+  helmet_distance_px: 90
+  goggles_distance_px: 60
+  gloves_distance_px: 75
+  boots_distance_px: 85
+  coverall_iou_threshold: 0.10
+
+verifier_cache:
+  ttl_compliant_seconds: 8
+  ttl_violation_seconds: 3
+
+state_machine:
+  window_size: 8
+  violation_threshold: 5
+  clear_threshold: 3
+
+required_ppe:
+  - helmet
+  - goggles
+  - gloves
+  - boots
+  - coverall
+
+dashboard:
+  jpeg_quality: 75
+  metrics_window_minutes: 60
+
+logging:
+  structured: true

@@ -44,6 +44,9 @@ runs/
 wandb/
 mlruns/
 tensorboard/
+YOLO26_DATASETS/
+YOLO26_DATASETS/**/images/
+YOLO26_DATASETS/**/labels/
 
 # Large model/weights/checkpoints
 *.pt
@@ -65,3 +68,10 @@ videos/
 *.avi
 *.mov
 *.mkv
+*.jpeg
+*.jpg
+
+# Local large documentation/assets (keep local, do not commit)
+Documentation/User Interface CCTVAI PDSI (1).pdf
+Documentation/User Interface CCTVAI PDSI (2).pdf
+alternatif/mobileclip_blt.ts

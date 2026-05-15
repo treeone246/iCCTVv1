@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PPE Compliance Monitor</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="title-group">
+        <h1>PPE Compliance Monitoring</h1>
+        <span id="liveBadge" class="live-badge">LIVE</span>
+      </div>
+      <div class="right-group">
+        <span id="cameraLabel" class="camera-label">Camera: Zone A</span>
+        <button id="settingsBtn" class="icon-btn" aria-label="Settings">⚙</button>
+      </div>
+    </header>
+
+    <section class="metrics-row">
+      <div class="metric-card">
+        <div class="metric-label">Tracked</div>
+        <div id="metricTracked" class="metric-value">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Active Violations</div>
+        <div id="metricViolations" class="metric-value">0</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Compliance (1h)</div>
+        <div id="metricCompliance" class="metric-value">0%</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Pipeline FPS</div>
+        <div id="metricFps" class="metric-value">0</div>
+      </div>
+    </section>
+
+    <main class="viewport-wrap">
+      <canvas id="overlayCanvas"></canvas>
+      <img id="hiddenFrame" alt="" />
+    </main>
+
+    <section class="panels-row">
+      <div class="panel">
+        <h2>Tracked Persons</h2>
+        <div id="personsPanel" class="panel-body"></div>
+      </div>
+      <div class="panel">
+        <h2>Active Alerts</h2>
+        <div id="alertsPanel" class="panel-body"></div>
+      </div>
+    </section>
+
+    <aside id="settingsDrawer" class="drawer hidden">
+      <div class="drawer-header">
+        <h3>Settings</h3>
+        <button id="closeSettingsBtn" class="icon-btn" aria-label="Close">✕</button>
+      </div>
+      <div class="drawer-body">
+        <label>Keypoint Confidence Floor <input id="settingKeypointFloor" type="number" step="0.01" value="0.40" /></label>
+        <label>Violation Threshold (5-of-8) <input id="settingViolationThreshold" type="number" value="5" /></label>
+        <label>Clear Threshold (Consecutive) <input id="settingClearThreshold" type="number" value="3" /></label>
+        <label>Verifier TTL Compliant (s) <input id="settingTtlCompliant" type="number" value="8" /></label>
+        <label>Verifier TTL Violation (s) <input id="settingTtlViolation" type="number" value="3" /></label>
+        <fieldset>
+          <legend>Required PPE</legend>
+          <label><input type="checkbox" checked /> Helmet</label>
+          <label><input type="checkbox" checked /> Goggles</label>
+          <label><input type="checkbox" checked /> Gloves</label>
+          <label><input type="checkbox" checked /> Boots</label>
+          <label><input type="checkbox" checked /> Coverall</label>
+        </fieldset>
+      </div>
+    </aside>
+
+    <script src="/dashboard.js"></script>
+  </body>
+</html>

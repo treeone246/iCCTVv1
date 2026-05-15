@@ -23,8 +23,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--source",
         type=str,
-        default="",
-        help="Video source path (e.g., videos/simulationTest.mp4). If empty, uses webcam.",
+        default="videos/CNN_TF_YOLO_TEST_INFERENCE.mp4",
+        help="Video source path (e.g., videos/CNN_TF_YOLO_TEST_INFERENCE.mp4). If empty, uses webcam.",
     )
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--conf", type=float, default=0.25)
@@ -51,6 +51,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--unknown-threshold", type=float, default=0.58)
     parser.add_argument("--decision-hold", type=int, default=3)
     parser.add_argument("--max-missing-frames", type=int, default=45)
+    parser.add_argument(
+        "--disable-optical-flow",
+        action="store_true",
+        help="Disable optical-flow layer and rely on pose/LSTM only.",
+    )
+    parser.add_argument(
+        "--flow-min-mag-px",
+        type=float,
+        default=0.8,
+        help="Minimum flow magnitude (pixels) treated as real motion.",
+    )
+    parser.add_argument(
+        "--flow-low-threshold",
+        type=float,
+        default=1.2,
+        help="Mean flow threshold for light movement.",
+    )
+    parser.add_argument(
+        "--flow-active-threshold",
+        type=float,
+        default=2.2,
+        help="Mean flow threshold for active movement.",
+    )
+    parser.add_argument(
+        "--flow-heavy-threshold",
+        type=float,
+        default=3.2,
+        help="Mean flow threshold for heavy movement.",
+    )
+    parser.add_argument(
+        "--flow-accident-p90-threshold",
+        type=float,
+        default=4.0,
+        help="P90 flow magnitude threshold for accident-like bursts.",
+    )
+    parser.add_argument(
+        "--flow-accident-vertical-ratio",
+        type=float,
+        default=0.58,
+        help="Minimum vertical-motion ratio for accident-like movement.",
+    )
     parser.add_argument(
         "--label-scope",
         type=str,
@@ -80,6 +121,14 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="Optional path to save annotated output video (e.g., outputs/rigAccident_pred.mp4).",
+    )
+    parser.add_argument(
+        "--save-video",
+        action="store_true",
+        help=(
+            "When using --source video file, auto-save annotated output to "
+            "outputs/<video>_realtime_pose_activity_lstm.mp4 if --save-output is not set."
+        ),
     )
     return parser.parse_args()
 
@@ -355,28 +404,80 @@ def _draw_track_card(
 
 
 def _draw_header(image: np.ndarray, fps: float, tracks: int, ready: int, window_size: int) -> None:
-    _draw_overlay_box(image, 10, 10, 520, 80, (15, 15, 15), alpha=0.55)
-    cv2.rectangle(image, (10, 10), (520, 80), (90, 210, 255), 2)
+    _draw_overlay_box(image, 10, 10, 140, 44, (7, 7, 7), alpha=0.55)
     cv2.putText(
         image,
-        "Drilling Activity Monitor (LSTM Streaming)",
-        (22, 34),
+        f"FPS {fps:.1f}",
+        (20, 34),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.66,
-        (248, 248, 248),
+        0.62,
+        (205, 230, 240),
         2,
         cv2.LINE_AA,
     )
-    cv2.putText(
-        image,
-        f"FPS {fps:.1f}  tracks {tracks}  ready {ready}  window {window_size}",
-        (22, 63),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.56,
-        (205, 230, 240),
-        1,
-        cv2.LINE_AA,
-    )
+
+
+def _flow_roi_features(
+    flow: np.ndarray | None,
+    bbox: tuple[float, float, float, float],
+    min_mag_px: float,
+) -> dict[str, float]:
+    if flow is None or flow.size == 0:
+        return {
+            "mean_mag": 0.0,
+            "p90_mag": 0.0,
+            "std_mag": 0.0,
+            "vertical_ratio": 0.0,
+            "moving_ratio": 0.0,
+        }
+
+    h, w = flow.shape[:2]
+    x1, y1, x2, y2 = [int(v) for v in bbox]
+    x1 = max(0, min(w - 1, x1))
+    y1 = max(0, min(h - 1, y1))
+    x2 = max(0, min(w, x2))
+    y2 = max(0, min(h, y2))
+    if x2 <= x1 or y2 <= y1:
+        return {
+            "mean_mag": 0.0,
+            "p90_mag": 0.0,
+            "std_mag": 0.0,
+            "vertical_ratio": 0.0,
+            "moving_ratio": 0.0,
+        }
+
+    roi = flow[y1:y2, x1:x2]
+    fx = roi[:, :, 0]
+    fy = roi[:, :, 1]
+    mag = np.sqrt((fx * fx) + (fy * fy)).astype(np.float32)
+
+    mean_mag = float(np.mean(mag)) if mag.size else 0.0
+    p90_mag = float(np.percentile(mag, 90)) if mag.size else 0.0
+    std_mag = float(np.std(mag)) if mag.size else 0.0
+
+    abs_fx = np.abs(fx)
+    abs_fy = np.abs(fy)
+    denom = abs_fx + abs_fy + 1e-6
+    vertical_ratio = float(np.mean(abs_fy / denom)) if denom.size else 0.0
+    moving_ratio = float(np.mean(mag >= min_mag_px)) if mag.size else 0.0
+
+    return {
+        "mean_mag": mean_mag,
+        "p90_mag": p90_mag,
+        "std_mag": std_mag,
+        "vertical_ratio": vertical_ratio,
+        "moving_ratio": moving_ratio,
+    }
+
+
+def _flow_motion_state(mean_mag: float, low: float, active: float, heavy: float) -> str:
+    if mean_mag < low:
+        return "still"
+    if mean_mag < active:
+        return "light"
+    if mean_mag < heavy:
+        return "active"
+    return "heavy"
 
 
 def map_to_baseline(label: str) -> str:
@@ -451,11 +552,18 @@ def main() -> None:
     source_fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
 
     writer = None
+    out_path: Path | None = None
     if args.save_output.strip():
         out_path = Path(args.save_output)
+    elif use_video_file and args.save_video:
+        source_path = Path(args.source)
+        out_path = Path("outputs") / f"{source_path.stem}_realtime_pose_activity_lstm.mp4"
+
+    if out_path is not None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(str(out_path), fourcc, source_fps, (frame_w, frame_h))
+        print(f"Saving annotated output to: {out_path.as_posix()}")
 
     histories: dict[int, deque[np.ndarray]] = defaultdict(lambda: deque(maxlen=window_size))
     ema_probs: dict[int, np.ndarray] = {}
@@ -465,6 +573,8 @@ def main() -> None:
     last_seen: dict[int, int] = {}
     instability_hist: dict[int, deque[float]] = defaultdict(lambda: deque(maxlen=12))
     prev_norm_frame: dict[int, np.ndarray] = {}
+    flow_hist: dict[int, deque[dict[str, float]]] = defaultdict(lambda: deque(maxlen=10))
+    prev_gray: np.ndarray | None = None
 
     frame_idx = 0
     prev = time.perf_counter()
@@ -480,6 +590,22 @@ def main() -> None:
                 else:
                     print("Failed to read frame from webcam.")
                 break
+
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            flow_field: np.ndarray | None = None
+            if not args.disable_optical_flow and prev_gray is not None:
+                flow_field = cv2.calcOpticalFlowFarneback(
+                    prev_gray,
+                    gray,
+                    None,
+                    0.5,
+                    3,
+                    15,
+                    3,
+                    5,
+                    1.2,
+                    0,
+                )
 
             results = pose_model.track(
                 source=frame,
@@ -573,6 +699,36 @@ def main() -> None:
                             if raw_detail in {"falling", "lying", "accident"}:
                                 raw_detail = "uncertain"
 
+                    flow_feat = _flow_roi_features(
+                        flow=flow_field,
+                        bbox=t["bbox"],
+                        min_mag_px=args.flow_min_mag_px,
+                    )
+                    flow_hist[pid].append(flow_feat)
+                    flow_mean = float(np.mean([f["mean_mag"] for f in flow_hist[pid]]))
+                    flow_p90 = float(np.mean([f["p90_mag"] for f in flow_hist[pid]]))
+                    flow_vertical = float(np.mean([f["vertical_ratio"] for f in flow_hist[pid]]))
+                    flow_state = _flow_motion_state(
+                        mean_mag=flow_mean,
+                        low=args.flow_low_threshold,
+                        active=args.flow_active_threshold,
+                        heavy=args.flow_heavy_threshold,
+                    )
+
+                    # Optical-flow extra layer:
+                    # 1) suppress accident if movement is not bursty/vertical enough.
+                    # 2) promote heavy-motion hints for high-movement cases.
+                    if not args.disable_optical_flow:
+                        if raw_general == "accident":
+                            if flow_p90 < args.flow_accident_p90_threshold or flow_vertical < args.flow_accident_vertical_ratio:
+                                raw_general = "not_working"
+                                raw_detail = "uncertain" if args.label_scope == "fine" else raw_detail
+
+                        if args.label_scope == "fine":
+                            if raw_general != "accident" and flow_state == "heavy":
+                                if raw_detail in {"standing", "sitting", "crouching"}:
+                                    raw_detail = "walking"
+
                     raw_label = raw_general if args.label_scope == "baseline" else raw_detail
 
                     prev_cand = candidate_label.get(pid)
@@ -588,6 +744,38 @@ def main() -> None:
                     label = stable_label.get(pid, raw_label)
                     general_label = map_to_baseline(label) if args.label_scope == "fine" else label
                     conf = top_conf
+                else:
+                    flow_feat = _flow_roi_features(
+                        flow=flow_field,
+                        bbox=t["bbox"],
+                        min_mag_px=args.flow_min_mag_px,
+                    )
+                    flow_hist[pid].append(flow_feat)
+                    flow_mean = float(np.mean([f["mean_mag"] for f in flow_hist[pid]]))
+                    flow_state = _flow_motion_state(
+                        mean_mag=flow_mean,
+                        low=args.flow_low_threshold,
+                        active=args.flow_active_threshold,
+                        heavy=args.flow_heavy_threshold,
+                    )
+                    if flow_state == "heavy":
+                        general_label = "working"
+                    elif flow_state in {"light", "active"}:
+                        general_label = "not_working"
+                    else:
+                        general_label = "warming_up"
+
+                if label not in {"warming_up", "uncertain"} and not args.hide_general_state:
+                    # Surface motion hint without changing classification text.
+                    if flow_hist[pid]:
+                        flow_mean_hint = float(np.mean([f["mean_mag"] for f in flow_hist[pid]]))
+                        flow_state_hint = _flow_motion_state(
+                            mean_mag=flow_mean_hint,
+                            low=args.flow_low_threshold,
+                            active=args.flow_active_threshold,
+                            heavy=args.flow_heavy_threshold,
+                        )
+                        general_label = f"{general_label} | move:{flow_state_hint}"
 
                 _draw_track_card(
                     image=annotated,
@@ -615,6 +803,7 @@ def main() -> None:
                 last_seen.pop(pid, None)
                 instability_hist.pop(pid, None)
                 prev_norm_frame.pop(pid, None)
+                flow_hist.pop(pid, None)
 
             now = time.perf_counter()
             fps = 1.0 / max(now - prev, 1e-6)
@@ -628,6 +817,7 @@ def main() -> None:
             if key == ord("q") or key == 27:
                 break
             frame_idx += 1
+            prev_gray = gray
     finally:
         cap.release()
         if writer is not None:

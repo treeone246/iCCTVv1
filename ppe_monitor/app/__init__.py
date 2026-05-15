@@ -1,0 +1,2 @@
+"""PPE monitoring application package."""
+

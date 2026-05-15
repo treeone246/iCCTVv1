@@ -1,0 +1,71 @@
+"""PPE detector wrapper around Ultralytics detection model."""
+
+from dataclasses import dataclass
+from typing import List, Tuple
+
+import numpy as np
+from ultralytics import YOLO
+
+
+@dataclass
+class PPEDetection:
+    """One PPE detection result."""
+
+    label: str
+    bbox: Tuple[float, float, float, float]
+    conf: float
+
+
+class PPEDetectorBase:
+    """Base detector interface."""
+
+    def detect(self, frame: np.ndarray) -> List[PPEDetection]:
+        raise NotImplementedError
+
+
+class YOLOPPEDetector(PPEDetectorBase):
+    """Ultralytics detector for fixed PPE classes."""
+
+    def __init__(self, model: YOLO, conf_threshold: float, imgsz: int) -> None:
+        self.model = model
+        self.conf_threshold = conf_threshold
+        self.imgsz = imgsz
+
+    def detect(self, frame: np.ndarray) -> List[PPEDetection]:
+        results = self.model.predict(
+            source=frame,
+            conf=self.conf_threshold,
+            imgsz=self.imgsz,
+            verbose=False,
+        )
+        if not results:
+            return []
+
+        result = results[0]
+        if result.boxes is None or result.boxes.xyxy is None:
+            return []
+
+        names = result.names if isinstance(result.names, dict) else {}
+        xyxy = result.boxes.xyxy.cpu().numpy()
+        conf = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else None
+        cls = result.boxes.cls.cpu().numpy() if result.boxes.cls is not None else None
+
+        detections: List[PPEDetection] = []
+        for idx, box in enumerate(xyxy):
+            class_id = int(cls[idx]) if cls is not None else -1
+            label = str(names.get(class_id, class_id))
+            detections.append(
+                PPEDetection(
+                    label=label,
+                    bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                    conf=float(conf[idx]) if conf is not None else 0.0,
+                )
+            )
+        return detections
+
+
+class MockPPEDetector(PPEDetectorBase):
+    """Fallback mock PPE detector that returns no detections."""
+
+    def detect(self, frame: np.ndarray) -> List[PPEDetection]:
+        return []
