@@ -66,6 +66,96 @@ All thresholds and behavior are in `config.yaml`.
 - Verify each model's input shape and output assumptions before debugging association logic.
 - YOLOE text-prompt inference usually does not survive ONNX export. The verifier is implemented as fixed-class detection and filtered by expected item.
 
+## Architecture
+
+### Flowchart (Per-Frame Processing)
+
+```mermaid
+flowchart TD
+    A[VideoSource.read_latest] --> B[MonitoringPipeline.process_frame]
+    B --> C[Encode frame to JPEG]
+    B --> D[PoseTracker.track]
+    B --> E[PPEDetector.detect]
+
+    D --> F[For each tracked person]
+    E --> F
+
+    F --> G[For each required PPE item]
+    G --> H[AssociationEngine.classify_item]
+
+    H -->|COMPLIANT / INDETERMINATE / held->VIOLATION| I[Use classification directly]
+    H -->|VIOLATION_TENTATIVE| J[VerifierCache.get person_id+item]
+
+    J -->|Cache hit| K[Map cached verdict to COMPLIANT/VIOLATION]
+    J -->|Cache miss| L[Crop person bbox]
+    L --> M[YOLOEVerifier.verify]
+    M --> N[VerifierCache.put with TTL]
+    N --> O[Map verdict to COMPLIANT/VIOLATION]
+
+    I --> P[StateMachine.update]
+    K --> P
+    O --> P
+
+    P --> Q[Build PersonPayload + overall status]
+    Q --> R[Build Active Alerts with evidence_jpeg_base64]
+    R --> S[Build Metrics FPS/verifier_calls/dropped/compliance]
+    S --> T[FramePayload + JPEG]
+
+    T --> U[WebSocket send bytes JPEG]
+    U --> V[WebSocket send JSON metadata]
+```
+
+### System Diagram (Runtime Component/Data Flow)
+
+```mermaid
+flowchart LR
+    subgraph Backend["FastAPI Backend"]
+        M[main.py]
+        VS[VideoSource]
+        PL[MonitoringPipeline]
+        PT[PoseTracker]
+        PD[PPEDetector]
+        AS[AssociationEngine]
+        VC[VerifierCache]
+        VF[YOLOEVerifier]
+        SM[PersonComplianceState]
+    end
+
+    subgraph Models["ONNX Models"]
+        P1[yolo26n-pose.onnx]
+        P2[best.onnx]
+        P3[yoloe-ppe.onnx]
+    end
+
+    subgraph Frontend["Dashboard (static)"]
+        JS[dashboard.js]
+        CV[Canvas Overlay]
+        AP[Alerts Panel + Snapshot + Ack]
+        PP[Tracked Persons Panel]
+        MT[Metrics Strip]
+    end
+
+    M --> VS
+    M --> PL
+
+    PL --> PT
+    PL --> PD
+    PL --> AS
+    PL --> VC
+    PL --> VF
+    PL --> SM
+
+    PT --> P1
+    PD --> P2
+    VF --> P3
+
+    PL -->|JPEG bytes + JSON FramePayload| JS
+    JS --> CV
+    JS --> AP
+    JS --> PP
+    JS --> MT
+```
+
 ## Troubleshooting
 
 - CUDA expected but CPU used:
