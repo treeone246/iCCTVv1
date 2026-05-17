@@ -62,6 +62,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional JSON output report path.",
     )
+    parser.add_argument(
+        "--skip-missing",
+        action="store_true",
+        help="Skip missing model files with warning instead of raising error.",
+    )
     return parser.parse_args()
 
 
@@ -213,20 +218,28 @@ def main() -> None:
 
     results: Dict[str, List[Dict[str, Any]]] = {"pose": [], "ppe": [], "verifier": []}
 
+    missing_models: List[str] = []
     for task, paths in model_groups.items():
         for model_path in paths:
             print(f"Benchmarking {task} model: {model_path.as_posix()}")
-            rep = benchmark_model(
-                model_path=model_path,
-                task="pose" if task == "pose" else "detect",
-                frames=frames,
-                conf=args.conf,
-                iou=args.iou,
-                imgsz=args.imgsz,
-                device=args.device,
-                warmup_frames=args.warmup_frames,
-            )
-            results[task].append(rep)
+            try:
+                rep = benchmark_model(
+                    model_path=model_path,
+                    task="pose" if task == "pose" else "detect",
+                    frames=frames,
+                    conf=args.conf,
+                    iou=args.iou,
+                    imgsz=args.imgsz,
+                    device=args.device,
+                    warmup_frames=args.warmup_frames,
+                )
+                results[task].append(rep)
+            except FileNotFoundError as exc:
+                if args.skip_missing:
+                    print(f"WARNING: {exc}")
+                    missing_models.append(model_path.as_posix())
+                    continue
+                raise
 
     print_report("POSE", results["pose"])
     print_report("PPE", results["ppe"])
@@ -247,6 +260,11 @@ def main() -> None:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps(report_payload, indent=2), encoding="utf-8")
         print(f"\nWrote report: {out_path.as_posix()}")
+
+    if missing_models:
+        print("\nMissing models skipped:")
+        for path in missing_models:
+            print(f"- {path}")
 
 
 if __name__ == "__main__":
