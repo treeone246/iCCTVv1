@@ -62,6 +62,32 @@ class MonitoringPipeline:
         self.ttl_compliant = float(cache_cfg["ttl_compliant_seconds"])
         self.ttl_violation = float(cache_cfg["ttl_violation_seconds"])
 
+        assoc_cfg = config["association"]
+        roi_cfg = config.get("verifier_roi", {})
+        self.verifier_roi_conf_floor = float(
+            roi_cfg.get("keypoint_conf_floor", config["inference"]["keypoint_conf_floor"])
+        )
+        self.verifier_roi_min_side = int(roi_cfg.get("min_side_px", 96))
+        self.verifier_roi_padding = dict(
+            roi_cfg.get(
+                "padding_scale",
+                {
+                    "helmet": 2.0,
+                    "goggles": 1.8,
+                    "gloves": 1.6,
+                    "boots": 1.6,
+                    "coverall": 1.25,
+                },
+            )
+        )
+        self.item_keypoints: Dict[str, List[str]] = {
+            "helmet": list(assoc_cfg["helmet_keypoints"]),
+            "goggles": list(assoc_cfg["goggles_keypoints"]),
+            "gloves": list(assoc_cfg["gloves_keypoints"]),
+            "boots": list(assoc_cfg["boots_keypoints"]),
+            "coverall": list(assoc_cfg["coverall_keypoints"]),
+        }
+
         dash_cfg = config["dashboard"]
         self.jpeg_quality = int(dash_cfg["jpeg_quality"])
         self.metrics_window_seconds = float(dash_cfg["metrics_window_minutes"]) * 60.0
@@ -190,7 +216,7 @@ class MonitoringPipeline:
                 else Classification.VIOLATION
             )
 
-        crop = self._crop_to_bbox(frame, person.bbox)
+        crop = self._crop_for_item(frame, person, item)
         verify_result = self.verifier.verify(crop, item)
         self.verifier_calls.append(time.time())
         ttl = self.ttl_compliant if verify_result.verdict == VerifierVerdict.COMPLIANT else self.ttl_violation
@@ -282,3 +308,52 @@ class MonitoringPipeline:
         if x2 <= x1 or y2 <= y1:
             return frame
         return frame[y1:y2, x1:x2]
+
+    def _crop_for_item(self, frame: np.ndarray, person: TrackedPerson, item: str) -> np.ndarray:
+        point_names = self.item_keypoints.get(item, [])
+        points: List[tuple[float, float]] = []
+        for name in point_names:
+            conf = float(person.keypoint_confidences.get(name, 0.0))
+            point = person.keypoints.get(name)
+            if point is None or conf < self.verifier_roi_conf_floor:
+                continue
+            points.append((float(point[0]), float(point[1])))
+
+        if not points:
+            return self._crop_to_bbox(frame, person.bbox)
+
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+
+        roi_w = max(1.0, max_x - min_x)
+        roi_h = max(1.0, max_y - min_y)
+        cx = (min_x + max_x) * 0.5
+        cy = (min_y + max_y) * 0.5
+
+        pad_scale = float(self.verifier_roi_padding.get(item, 1.6))
+        target_w = max(float(self.verifier_roi_min_side), roi_w * pad_scale)
+        target_h = max(float(self.verifier_roi_min_side), roi_h * pad_scale)
+
+        candidate = (
+            cx - target_w * 0.5,
+            cy - target_h * 0.5,
+            cx + target_w * 0.5,
+            cy + target_h * 0.5,
+        )
+
+        # Keep ROI inside person bounds for context while suppressing clutter.
+        person_box = person.bbox
+        constrained = (
+            max(candidate[0], person_box[0]),
+            max(candidate[1], person_box[1]),
+            min(candidate[2], person_box[2]),
+            min(candidate[3], person_box[3]),
+        )
+
+        if constrained[2] <= constrained[0] or constrained[3] <= constrained[1]:
+            return self._crop_to_bbox(frame, person.bbox)
+        return self._crop_to_bbox(frame, constrained)

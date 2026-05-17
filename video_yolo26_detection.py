@@ -12,13 +12,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="best.pt",
+        default="best2.pt",
         help="Path to YOLO model weights (default: best.pt).",
     )
     parser.add_argument(
         "--video",
         type=str,
-        default="simulationTest2_yoloe_ppe_onnx.mp4",
+        default="simulationTest2.mp4",
         help="Input video path or filename in videos/ (default: simulationTesting.mp4).",
     )
     parser.add_argument(

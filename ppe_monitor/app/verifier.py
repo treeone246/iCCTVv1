@@ -42,10 +42,11 @@ class YOLOEVerifier(VerifierBase):
         conf = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else []
 
         best_match: Optional[float] = None
+        expected_norm = _normalize_label(expected_item)
         for idx, class_id in enumerate(cls):
             label = str(names.get(int(class_id), int(class_id)))
             # TODO: swap to prompt-based inference once prompt-encoder export is usable in ONNX runtime.
-            if label == expected_item:
+            if _normalize_label(label) == expected_norm:
                 score = float(conf[idx]) if idx < len(conf) else 0.0
                 if best_match is None or score > best_match:
                     best_match = score
@@ -65,3 +66,7 @@ class MockVerifier(VerifierBase):
 
     def verify(self, crop: np.ndarray, expected_item: str) -> VerifierResult:
         return VerifierResult(verdict=VerifierVerdict.COMPLIANT, score=1.0, source="mock")
+
+
+def _normalize_label(value: str) -> str:
+    return value.strip().lower().replace("-", "_").replace(" ", "_")

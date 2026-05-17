@@ -176,3 +176,134 @@ pytest -q
 ```
 
 CI can run with `models.allow_mock_models: true` (no real model files required).
+
+## Verifier Evaluation
+
+Use `eval_verifier.py` to get concrete verifier quality metrics on labeled crops.
+
+Expected dataset layout:
+
+```text
+<dataset_root>/
+  helmet/
+    compliant/*.jpg
+    violation/*.jpg
+  goggles/
+    compliant/*.jpg
+    violation/*.jpg
+  gloves/
+    compliant/*.jpg
+    violation/*.jpg
+  boots/
+    compliant/*.jpg
+    violation/*.jpg
+  coverall/
+    compliant/*.jpg
+    violation/*.jpg
+```
+
+Run:
+
+```bash
+python eval_verifier.py \
+  --model models/yoloe-ppe.onnx \
+  --dataset-root ./verifier_eval_data \
+  --conf 0.45 \
+  --imgsz 640 \
+  --report-json outputs/verifier_report.json
+```
+
+The report includes per-item confusion counts (`tp/fp/tn/fn`), precision, recall, F1, false-clear rate, and violation recall.
+
+## Pipeline Lift Evaluation (Base vs Verifier)
+
+Use `eval_pipeline_lift.py` to compare:
+
+- Base-only: association output without verifier override
+- Base+verifier: current runtime behavior with cache-gated verifier
+
+Required inputs:
+
+1. Video file
+2. Labels JSON with per-frame person boxes and per-item compliance labels
+
+Example labels JSON:
+
+```json
+{
+  "items": ["helmet", "goggles", "gloves", "boots", "coverall"],
+  "frames": [
+    {
+      "frame_id": 10,
+      "persons": [
+        {
+          "bbox": [120, 80, 420, 680],
+          "items": {
+            "helmet": "COMPLIANT",
+            "goggles": "VIOLATION",
+            "gloves": "COMPLIANT",
+            "boots": "COMPLIANT",
+            "coverall": "COMPLIANT"
+          }
+        }
+      ]
+    }
+  ]
+}
+```
+
+Run:
+
+```bash
+python eval_pipeline_lift.py \
+  --video ./videos/simulationTest2.mp4 \
+  --labels ./eval/labels.json \
+  --config ./config.yaml \
+  --iou-match-threshold 0.30 \
+  --report-json outputs/pipeline_lift_report.json
+```
+
+Output includes:
+
+- Per-item and overall precision/recall/F1
+- False-clear rate (GT violation predicted compliant)
+- Violation recall
+- Lift deltas between modes
+- Person matching rate (GT person to tracked person IoU match coverage)
+
+## Auto-Extract Verifier ROI Crops
+
+Use `extract_verifier_rois.py` to export ROI crops from video using the exact
+item-crop logic used by the runtime pipeline.
+
+Run:
+
+```bash
+python extract_verifier_rois.py \
+  --video ./videos/simulationTest2.mp4 \
+  --output-dir ./verifier_eval_data_auto \
+  --mode all \
+  --bucket-by final \
+  --frame-step 2 \
+  --max-frames 0
+```
+
+Modes:
+
+- `all`: save every item ROI for each tracked person
+- `tentative`: save only base `VIOLATION_TENTATIVE` items
+- `non_compliant`: save base `VIOLATION` + `VIOLATION_TENTATIVE`
+- `--bucket-by base|final`: place images by base association class or final class after verifier
+
+Output structure:
+
+```text
+verifier_eval_data_auto/
+  <item>/
+    compliant_candidate/
+    violation_candidate/
+    indeterminate_candidate/
+  metadata.jsonl
+```
+
+The candidate folders are pre-bucketed by base classification for faster manual review.

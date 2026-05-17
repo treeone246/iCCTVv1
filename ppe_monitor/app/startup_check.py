@@ -191,10 +191,12 @@ def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponen
     if loaded_models["ppe"] is None:
         ppe_detector = MockPPEDetector()
     else:
+        label_aliases = config.get("ppe_label_aliases", {})
         ppe_detector = YOLOPPEDetector(
             model=loaded_models["ppe"],
             conf_threshold=float(infer_cfg["conf_threshold_ppe"]),
             imgsz=imgsz,
+            label_aliases=label_aliases,
         )
 
     if loaded_models["verifier"] is None:

@@ -9,10 +9,17 @@ models:
   verifier: models/yoloe-ppe.onnx
   allow_mock_models: true
 
+ppe_label_aliases:
+  helmet: [helmet, hardhat, hard_hat, helmet_hardhat, helmet/hardhat]
+  goggles: [goggles, safety_glasses, safety glasses, glasses]
+  gloves: [gloves, glove, hand_gloves, hand_glove]
+  boots: [boots, boot, safety_boots, safety shoes, safety_shoes, shoes]
+  coverall: [coverall, coveralls, overall, overalls]
+
 inference:
   device: auto
   conf_threshold_pose: 0.40
-  conf_threshold_ppe: 0.35
+  conf_threshold_ppe: 0.22
   conf_threshold_verifier: 0.45
   keypoint_conf_floor: 0.40
   imgsz: 640
@@ -27,14 +34,24 @@ association:
   boots_keypoints: [left_ankle, right_ankle]
   coverall_keypoints: [left_shoulder, right_shoulder, left_hip, right_hip]
   helmet_distance_px: 90
-  goggles_distance_px: 60
-  gloves_distance_px: 75
-  boots_distance_px: 85
-  coverall_iou_threshold: 0.10
+  goggles_distance_px: 85
+  gloves_distance_px: 110
+  boots_distance_px: 120
+  coverall_iou_threshold: 0.05
 
 verifier_cache:
   ttl_compliant_seconds: 8
   ttl_violation_seconds: 3
+
+verifier_roi:
+  keypoint_conf_floor: 0.40
+  min_side_px: 96
+  padding_scale:
+    helmet: 2.0
+    goggles: 1.8
+    gloves: 1.6
+    boots: 1.6
+    coverall: 1.25
 
 state_machine:
   window_size: 8
