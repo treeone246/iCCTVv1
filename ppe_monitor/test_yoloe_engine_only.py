@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import cv2
 from ultralytics import YOLO
@@ -89,6 +89,48 @@ def draw_counts(frame, counts: Dict[str, int], fps: float) -> None:
         y += 18
 
 
+def safe_label(names: Dict[int, str], class_id: int) -> str:
+    return str(names.get(class_id, f"class_{class_id}"))
+
+
+def draw_detections_safe(frame, result) -> Tuple[any, Dict[str, int], List[int]]:
+    out = frame.copy()
+    counts: Dict[str, int] = {}
+    unknown_ids: List[int] = []
+
+    names = result.names if isinstance(result.names, dict) else {}
+    if result.boxes is None or result.boxes.xyxy is None:
+        return out, counts, unknown_ids
+
+    xyxy = result.boxes.xyxy.cpu().numpy()
+    conf = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else []
+    cls = result.boxes.cls.cpu().numpy() if result.boxes.cls is not None else []
+
+    for i, box in enumerate(xyxy):
+        class_id = int(cls[i]) if i < len(cls) else -1
+        label = safe_label(names, class_id)
+        if class_id not in names:
+            unknown_ids.append(class_id)
+
+        score = float(conf[i]) if i < len(conf) else 0.0
+        x1, y1, x2, y2 = [int(v) for v in box]
+        color = (0, 210, 210) if class_id in names else (0, 0, 255)
+        cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(
+            out,
+            f"{label}:{score:.2f}",
+            (x1, max(12, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
+        counts[label] = counts.get(label, 0) + 1
+
+    return out, counts, sorted(set(unknown_ids))
+
+
 def infer_single_image(model: YOLO, image_path: str, args: argparse.Namespace) -> None:
     image = cv2.imread(image_path)
     if image is None:
@@ -103,21 +145,18 @@ def infer_single_image(model: YOLO, image_path: str, args: argparse.Namespace) -
         verbose=False,
     )
     result = results[0]
-    annotated = result.plot()
+    annotated, counts, unknown_ids = draw_detections_safe(image, result)
     out_path = Path("outputs") / f"{Path(image_path).stem}_yoloe_only.jpg"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(out_path.as_posix(), annotated)
     print(f"Saved: {out_path.as_posix()}")
 
-    names = result.names if isinstance(result.names, dict) else {}
-    if result.boxes is not None and result.boxes.cls is not None:
-        cls = result.boxes.cls.cpu().numpy()
-        conf = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else []
+    if counts:
         print("Detections:")
-        for i, c in enumerate(cls):
-            label = str(names.get(int(c), int(c)))
-            score = float(conf[i]) if i < len(conf) else 0.0
-            print(f"- {label}: {score:.3f}")
+        for label, cnt in counts.items():
+            print(f"- {label}: {cnt}")
+        if unknown_ids:
+            print(f"Unknown class IDs in output: {unknown_ids}")
     else:
         print("No detections.")
 
@@ -161,6 +200,7 @@ def main() -> None:
     frame_count = 0
     t_prev = time.perf_counter()
     fps_smoothed = 0.0
+    seen_unknown_ids: Dict[int, int] = {}
 
     try:
         while True:
@@ -177,15 +217,9 @@ def main() -> None:
                 verbose=False,
             )
             result = results[0]
-            annotated = result.plot()
-
-            counts: Dict[str, int] = {}
-            names = result.names if isinstance(result.names, dict) else {}
-            if result.boxes is not None and result.boxes.cls is not None:
-                cls = result.boxes.cls.cpu().numpy()
-                for c in cls:
-                    label = str(names.get(int(c), int(c)))
-                    counts[label] = counts.get(label, 0) + 1
+            annotated, counts, unknown_ids = draw_detections_safe(frame, result)
+            for uid in unknown_ids:
+                seen_unknown_ids[uid] = seen_unknown_ids.get(uid, 0) + 1
 
             t_now = time.perf_counter()
             inst_fps = 1.0 / max(1e-6, (t_now - t_prev))
@@ -213,6 +247,10 @@ def main() -> None:
         cv2.destroyAllWindows()
 
     print(f"Done. Frames processed: {frame_count}")
+    if seen_unknown_ids:
+        print("Unknown class IDs summary (likely names/engine metadata mismatch):")
+        for class_id, cnt in sorted(seen_unknown_ids.items()):
+            print(f"- class_{class_id}: {cnt} boxes")
     if args.save_video:
         print(f"Saved video: {Path(args.save_video).as_posix()}")
 
