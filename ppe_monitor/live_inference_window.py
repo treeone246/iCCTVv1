@@ -23,6 +23,17 @@ STATUS_COLOR = {
     "INDETERMINATE": (0, 165, 255),
 }
 
+REASON_LEGEND = {
+    "detected_and_spatially_bound": "Detected and correctly worn",
+    "keypoint_not_visible_or_out_of_frame": "Cannot assess (limb/keypoint not visible)",
+    "detected_but_held_not_worn": "Detected but held, not worn",
+    "direct_violation": "Direct violation from association",
+    "verifier_cache_compliant": "Compliant from verifier cache",
+    "verifier_cache_violation": "Violation from verifier cache",
+    "verifier_yoloe_compliant": "Compliant by YOLOE verifier",
+    "verifier_yoloe_violation": "Violation by YOLOE verifier",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Live inference window using PPE pipeline models.")
@@ -36,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conf-ppe", type=float, default=-1.0, help="Override PPE confidence threshold.")
     parser.add_argument("--conf-verifier", type=float, default=-1.0, help="Override verifier confidence threshold.")
     parser.add_argument("--show-skeleton", action="store_true", help="Draw pose keypoints.")
+    parser.add_argument("--show-reason-legend", action="store_true", help="Show reason code legend on screen.")
     parser.add_argument("--max-frames", type=int, default=0, help="Optional frame limit (0 = infinite).")
     return parser.parse_args()
 
@@ -44,7 +56,13 @@ def parse_source(source_arg: str) -> int | str:
     return int(source_arg) if source_arg.isdigit() else source_arg
 
 
-def draw_overlay(frame: Any, payload: Any, show_skeleton: bool) -> Any:
+def _human_reason(reason: str) -> str:
+    if not reason:
+        return ""
+    return REASON_LEGEND.get(reason, reason.replace("_", " "))
+
+
+def draw_overlay(frame: Any, payload: Any, show_skeleton: bool, show_reason_legend: bool) -> Any:
     out = frame.copy()
 
     for det in payload.ppe_detections:
@@ -94,7 +112,7 @@ def draw_overlay(frame: Any, payload: Any, show_skeleton: bool) -> Any:
             if reason and state != "COMPLIANT":
                 cv2.putText(
                     out,
-                    f"  reason:{reason}",
+                    f"  reason:{_human_reason(reason)}",
                     (x1, line_y),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.4,
@@ -114,6 +132,28 @@ def draw_overlay(frame: Any, payload: Any, show_skeleton: bool) -> Any:
     top = f"FPS:{m.fps:.1f} tracked:{m.tracked_count} active:{m.active_violations} dropped:{m.dropped_frames} verifier/s:{m.verifier_calls_last_sec}"
     cv2.putText(out, top, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 2, cv2.LINE_AA)
     cv2.putText(out, top, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1, cv2.LINE_AA)
+
+    if show_reason_legend:
+        lines = [
+            "Reason Legend:",
+            "detected_and_spatially_bound = Detected and worn",
+            "keypoint_not_visible_or_out_of_frame = Cannot assess",
+            "detected_but_held_not_worn = Held PPE, not worn",
+            "direct_violation = Association violation",
+            "verifier_cache_compliant/violation = Cached verifier result",
+            "verifier_yoloe_compliant/violation = YOLOE verifier result",
+        ]
+        margin = 10
+        x = 12
+        y = 40
+        line_h = 16
+        panel_w = 520
+        panel_h = margin * 2 + line_h * len(lines)
+        cv2.rectangle(out, (x - 6, y - 14), (x - 6 + panel_w, y - 14 + panel_h), (20, 20, 20), -1)
+        cv2.rectangle(out, (x - 6, y - 14), (x - 6 + panel_w, y - 14 + panel_h), (140, 140, 140), 1)
+        for i, line in enumerate(lines):
+            ly = y + i * line_h
+            cv2.putText(out, line, (x, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (240, 240, 240), 1, cv2.LINE_AA)
     return out
 
 
@@ -162,7 +202,12 @@ def main() -> None:
                 break
 
             payload, _ = pipeline.process_frame(frame, frame_id)
-            vis = draw_overlay(frame, payload, show_skeleton=args.show_skeleton)
+            vis = draw_overlay(
+                frame,
+                payload,
+                show_skeleton=args.show_skeleton,
+                show_reason_legend=args.show_reason_legend,
+            )
             cv2.imshow(window_name, vis)
 
             key = cv2.waitKey(1) & 0xFF
