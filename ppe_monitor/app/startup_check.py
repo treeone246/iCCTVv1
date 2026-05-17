@@ -106,6 +106,29 @@ def inspect_onnx_model(path: Path, providers: List[str], imgsz: int) -> dict:
     }
 
 
+def inspect_model_artifact(path: Path, providers: List[str], imgsz: int) -> dict:
+    """Inspect model metadata when possible.
+
+    ONNX files are inspected via onnxruntime. Non-ONNX artifacts (e.g. TensorRT
+    .engine) are reported with minimal metadata and skipped from ORT probing.
+    """
+    suffix = path.suffix.lower()
+    if suffix == ".onnx":
+        info = inspect_onnx_model(path, providers, imgsz)
+        info["artifact_format"] = "onnx"
+        return info
+
+    return {
+        "available": True,
+        "artifact_format": suffix.lstrip(".") or "unknown",
+        "active_provider": "n/a",
+        "inputs": None,
+        "outputs": None,
+        "warmup_ms": None,
+        "note": "Skipping ONNX Runtime inspection for non-ONNX artifact.",
+    }
+
+
 def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponents:
     """Load or mock models, and emit startup diagnostics."""
 
@@ -146,7 +169,7 @@ def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponen
             )
 
         file_size = model_path.stat().st_size
-        diagnostics = inspect_onnx_model(model_path, provider_pref, imgsz)
+        diagnostics = inspect_model_artifact(model_path, provider_pref, imgsz)
         provider_info[key] = diagnostics
         provider_info[key]["path"] = model_path.as_posix()
         provider_info[key]["size_bytes"] = file_size
@@ -157,14 +180,29 @@ def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponen
             model_key=key,
             path=model_path.as_posix(),
             size_bytes=file_size,
+            artifact_format=diagnostics.get("artifact_format"),
             inputs=diagnostics.get("inputs"),
             outputs=diagnostics.get("outputs"),
             active_provider=diagnostics.get("active_provider"),
             warmup_ms=diagnostics.get("warmup_ms"),
         )
 
+        log_event(
+            "model_backend_selected",
+            model_key=key,
+            artifact_format=diagnostics.get("artifact_format"),
+            backend_hint=(
+                "onnxruntime" if diagnostics.get("artifact_format") == "onnx" else "tensorrt/ultralytics"
+            ),
+            path=model_path.as_posix(),
+        )
+
         active_provider = diagnostics.get("active_provider", "")
-        if expected_provider == "CUDAExecutionProvider" and active_provider != "CUDAExecutionProvider":
+        if (
+            diagnostics.get("artifact_format") == "onnx"
+            and expected_provider == "CUDAExecutionProvider"
+            and active_provider != "CUDAExecutionProvider"
+        ):
             log_event(
                 "provider_warning",
                 model_key=key,
