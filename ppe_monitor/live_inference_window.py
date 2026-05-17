@@ -6,7 +6,6 @@ Supports ONNX or TensorRT engine model paths through config overrides.
 from __future__ import annotations
 
 import argparse
-import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +14,6 @@ import yaml
 
 from app.main import load_config
 from app.pipeline import MonitoringPipeline
-from app.schemas import Classification, OverallStatus
 from app.startup_check import load_runtime_components
 
 
@@ -80,6 +78,7 @@ def draw_overlay(frame: Any, payload: Any, show_skeleton: bool) -> Any:
 
         line_y = y2 + 16
         for item, state in person.per_item_state.items():
+            reason = person.per_item_reason.get(item, "") if hasattr(person, "per_item_reason") else ""
             state_color = STATUS_COLOR.get(state, (128, 128, 128))
             cv2.putText(
                 out,
@@ -92,6 +91,18 @@ def draw_overlay(frame: Any, payload: Any, show_skeleton: bool) -> Any:
                 cv2.LINE_AA,
             )
             line_y += 15
+            if reason and state != "COMPLIANT":
+                cv2.putText(
+                    out,
+                    f"  reason:{reason}",
+                    (x1, line_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    state_color,
+                    1,
+                    cv2.LINE_AA,
+                )
+                line_y += 14
 
         if show_skeleton:
             for kp in person.keypoints.values():

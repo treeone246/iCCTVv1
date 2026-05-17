@@ -73,6 +73,7 @@ class PersonPayload(BaseModel):
     bbox: List[float]
     keypoints: Dict[str, KeypointPayload]
     per_item_state: Dict[str, Classification]
+    per_item_reason: Dict[str, str] = {}
     overall_status: OverallStatus
 
 

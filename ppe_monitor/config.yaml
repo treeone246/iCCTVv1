@@ -24,6 +24,12 @@ inference:
   keypoint_conf_floor: 0.40
   imgsz: 640
 
+detector_ensemble:
+  enabled: true
+  yoloe_conf_threshold: 0.30
+  iou_nms_threshold: 0.50
+  allowed_items: [helmet, goggles, gloves, boots, coverall]
+
 association:
   keypoint_conf_floor: 0.40
   held_distance_ratio: 1.2

@@ -156,11 +156,15 @@ function updatePanels(payload) {
     const chipList = document.createElement("div");
     chipList.className = "chip-list";
     for (const [item, state] of Object.entries(person.per_item_state || {})) {
+      const reason = (person.per_item_reason || {})[item] || "";
       const chip = document.createElement("span");
       const cls =
         state === "COMPLIANT" ? "ok" : state === "VIOLATION" ? "bad" : "warn";
       chip.className = `chip ${cls}`;
-      chip.textContent = `${item}: ${state}`;
+      chip.textContent = `${item}: ${state}${reason ? ` (${reason})` : ""}`;
+      if (reason) {
+        chip.title = reason;
+      }
       chipList.appendChild(chip);
     }
     card.appendChild(chipList);

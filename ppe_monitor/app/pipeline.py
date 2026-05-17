@@ -4,15 +4,16 @@ import base64
 import json
 import time
 from collections import deque
+from dataclasses import dataclass
 from typing import Deque, Dict, List, Tuple
 
 import cv2
 import numpy as np
 
-from .association import AssociationEngine
+from .association import AssociationEngine, iou as box_iou
 from .cache import VerifierCache
 from .pose_tracker import PoseTrackerBase, TrackedPerson
-from .ppe_detector import PPEDetection, PPEDetectorBase
+from .ppe_detector import PPEDetection, PPEDetectorBase, build_alias_index, canonicalize_label
 from .schemas import (
     AlertPayload,
     BBoxPayload,
@@ -26,6 +27,14 @@ from .schemas import (
 )
 from .state_machine import PersonComplianceState
 from .verifier import VerifierBase
+
+
+@dataclass
+class ItemDecision:
+    """Final per-item decision and explanatory reason."""
+
+    classification: Classification
+    reason: str
 
 
 def log_event(event_type: str, frame_id: int, person_id: int, **fields: object) -> None:
@@ -48,6 +57,7 @@ class MonitoringPipeline:
         self.verifier = verifier
         self.config = config
         self.required_ppe: List[str] = list(config["required_ppe"])
+        self.last_item_reason: Dict[Tuple[int, str], str] = {}
 
         self.association = AssociationEngine(config)
         self.cache = VerifierCache()
@@ -87,6 +97,13 @@ class MonitoringPipeline:
             "boots": list(assoc_cfg["boots_keypoints"]),
             "coverall": list(assoc_cfg["coverall_keypoints"]),
         }
+        self.alias_to_canonical = build_alias_index(config.get("ppe_label_aliases", {}))
+
+        ens_cfg = config.get("detector_ensemble", {})
+        self.ensemble_enabled = bool(ens_cfg.get("enabled", True))
+        self.ensemble_yoloe_conf = float(ens_cfg.get("yoloe_conf_threshold", config["inference"]["conf_threshold_verifier"]))
+        self.ensemble_iou_nms = float(ens_cfg.get("iou_nms_threshold", 0.5))
+        self.ensemble_allow_from_verifier = set(str(x) for x in ens_cfg.get("allowed_items", self.required_ppe))
 
         dash_cfg = config["dashboard"]
         self.jpeg_quality = int(dash_cfg["jpeg_quality"])
@@ -105,14 +122,18 @@ class MonitoringPipeline:
     def process_frame(self, frame: np.ndarray, frame_id: int) -> tuple[FramePayload, bytes]:
         frame_jpeg = self._encode_frame(frame)
         tracked_people = self.pose_tracker.track(frame)
-        ppe_detections = self.ppe_detector.detect(frame)
+        ppe_detections = self._detect_ppe(frame)
 
         person_payloads: List[PersonPayload] = []
         for person in tracked_people:
             per_item_state: Dict[str, Classification] = {}
+            per_item_reason: Dict[str, str] = {}
             for item in self.required_ppe:
-                item_state = self._classify_person_item(person, ppe_detections, item, frame)
+                decision = self._classify_person_item_with_reason(person, ppe_detections, item, frame)
+                item_state = decision.classification
                 per_item_state[item] = item_state
+                per_item_reason[item] = decision.reason
+                self.last_item_reason[(person.person_id, item)] = decision.reason
 
                 if item_state in (Classification.COMPLIANT, Classification.VIOLATION):
                     self.classification_history.append((time.time(), item_state))
@@ -147,6 +168,7 @@ class MonitoringPipeline:
                         for name, xy in person.keypoints.items()
                     },
                     per_item_state=per_item_state,
+                    per_item_reason=per_item_reason,
                     overall_status=overall,
                 )
             )
@@ -192,12 +214,21 @@ class MonitoringPipeline:
         item: str,
         frame: np.ndarray,
     ) -> Classification:
+        return self._classify_person_item_with_reason(person, ppe_detections, item, frame).classification
+
+    def _classify_person_item_with_reason(
+        self,
+        person: TrackedPerson,
+        ppe_detections: List[PPEDetection],
+        item: str,
+        frame: np.ndarray,
+    ) -> ItemDecision:
         detection_dicts = [
             {"label": det.label, "bbox": det.bbox, "conf": det.conf}
             for det in ppe_detections
         ]
 
-        base_classification, _ = self.association.classify_item(
+        base_classification, bind = self.association.classify_item(
             item=item,
             keypoints=person.keypoints,
             keypoint_confidences=person.keypoint_confidences,
@@ -206,15 +237,27 @@ class MonitoringPipeline:
         )
 
         if base_classification != Classification.VIOLATION_TENTATIVE:
-            return base_classification
+            if base_classification == Classification.COMPLIANT:
+                return ItemDecision(base_classification, "detected_and_spatially_bound")
+            if base_classification == Classification.INDETERMINATE:
+                return ItemDecision(base_classification, "keypoint_not_visible_or_out_of_frame")
+            if bind is not None and bind.held:
+                return ItemDecision(base_classification, "detected_but_held_not_worn")
+            return ItemDecision(base_classification, "direct_violation")
 
         cached = self.cache.get(person.person_id, item)
         if cached is not None:
-            return (
+            final_cls = (
                 Classification.COMPLIANT
                 if cached.verdict == VerifierVerdict.COMPLIANT
                 else Classification.VIOLATION
             )
+            reason = (
+                "verifier_cache_compliant"
+                if cached.verdict == VerifierVerdict.COMPLIANT
+                else "verifier_cache_violation"
+            )
+            return ItemDecision(final_cls, reason)
 
         crop = self._crop_for_item(frame, person, item)
         verify_result = self.verifier.verify(crop, item)
@@ -222,11 +265,17 @@ class MonitoringPipeline:
         ttl = self.ttl_compliant if verify_result.verdict == VerifierVerdict.COMPLIANT else self.ttl_violation
         self.cache.put(person.person_id, item, verify_result, ttl)
 
-        return (
+        final_cls = (
             Classification.COMPLIANT
             if verify_result.verdict == VerifierVerdict.COMPLIANT
             else Classification.VIOLATION
         )
+        reason = (
+            f"verifier_{verify_result.source}_compliant"
+            if verify_result.verdict == VerifierVerdict.COMPLIANT
+            else f"verifier_{verify_result.source}_violation"
+        )
+        return ItemDecision(final_cls, reason)
 
     def _build_active_alerts(self) -> List[AlertPayload]:
         alerts: List[AlertPayload] = []
@@ -237,13 +286,14 @@ class MonitoringPipeline:
                 else None
             )
             alert_id = f"{person_id}:{item}:{int(item_state.last_transition_ts * 1000)}"
+            reason = self.last_item_reason.get((person_id, item), f"missing_or_incorrect_{item}")
             alerts.append(
                 AlertPayload(
                     alert_id=alert_id,
                     person_id=person_id,
                     item=item,
                     status=item_state.alert_status,
-                    reason=f"missing_or_incorrect_{item}",
+                    reason=reason,
                     timestamp=item_state.last_transition_ts,
                     evidence_available=item_state.evidence_jpeg is not None,
                     evidence_jpeg_base64=encoded_evidence,
@@ -357,3 +407,75 @@ class MonitoringPipeline:
         if constrained[2] <= constrained[0] or constrained[3] <= constrained[1]:
             return self._crop_to_bbox(frame, person.bbox)
         return self._crop_to_bbox(frame, constrained)
+
+    def _detect_ppe(self, frame: np.ndarray) -> List[PPEDetection]:
+        """Run primary detector and optional YOLOE ensemble detector."""
+        primary = self.ppe_detector.detect(frame)
+        if not self.ensemble_enabled:
+            return primary
+
+        yoloe = self._detect_with_verifier_model(frame)
+        combined = primary + yoloe
+        if not combined:
+            return combined
+        return self._nms_merge_detections(combined, iou_threshold=self.ensemble_iou_nms)
+
+    def _detect_with_verifier_model(self, frame: np.ndarray) -> List[PPEDetection]:
+        """Use verifier model as an auxiliary full-frame detector for recall boost."""
+        if not hasattr(self.verifier, "model"):
+            return []
+        model = getattr(self.verifier, "model")
+        imgsz = getattr(self.verifier, "imgsz", self.config["inference"]["imgsz"])
+
+        results = model.predict(
+            source=frame,
+            conf=self.ensemble_yoloe_conf,
+            imgsz=imgsz,
+            verbose=False,
+        )
+        if not results:
+            return []
+
+        result = results[0]
+        if result.boxes is None or result.boxes.xyxy is None:
+            return []
+
+        names = result.names if isinstance(result.names, dict) else {}
+        xyxy = result.boxes.xyxy.cpu().numpy()
+        conf = result.boxes.conf.cpu().numpy() if result.boxes.conf is not None else None
+        cls = result.boxes.cls.cpu().numpy() if result.boxes.cls is not None else None
+
+        out: List[PPEDetection] = []
+        for idx, box in enumerate(xyxy):
+            class_id = int(cls[idx]) if cls is not None else -1
+            raw_label = str(names.get(class_id, class_id))
+            label = canonicalize_label(raw_label, self.alias_to_canonical)
+            if label not in self.ensemble_allow_from_verifier:
+                continue
+            out.append(
+                PPEDetection(
+                    label=label,
+                    bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
+                    conf=float(conf[idx]) if conf is not None else 0.0,
+                )
+            )
+        return out
+
+    def _nms_merge_detections(self, detections: List[PPEDetection], iou_threshold: float) -> List[PPEDetection]:
+        """Simple class-aware NMS merge across detector sources."""
+        by_label: Dict[str, List[PPEDetection]] = {}
+        for det in detections:
+            by_label.setdefault(det.label, []).append(det)
+
+        kept: List[PPEDetection] = []
+        for label, group in by_label.items():
+            group_sorted = sorted(group, key=lambda d: d.conf, reverse=True)
+            while group_sorted:
+                best = group_sorted.pop(0)
+                kept.append(best)
+                remain: List[PPEDetection] = []
+                for det in group_sorted:
+                    if box_iou(best.bbox, det.bbox) < iou_threshold:
+                        remain.append(det)
+                group_sorted = remain
+        return kept

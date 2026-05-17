@@ -36,7 +36,7 @@ class YOLOPPEDetector(PPEDetectorBase):
         self.model = model
         self.conf_threshold = conf_threshold
         self.imgsz = imgsz
-        self.alias_to_canonical = _build_alias_index(label_aliases or {})
+        self.alias_to_canonical = build_alias_index(label_aliases or {})
 
     def detect(self, frame: np.ndarray) -> List[PPEDetection]:
         results = self.model.predict(
@@ -61,7 +61,7 @@ class YOLOPPEDetector(PPEDetectorBase):
         for idx, box in enumerate(xyxy):
             class_id = int(cls[idx]) if cls is not None else -1
             raw_label = str(names.get(class_id, class_id))
-            label = _canonicalize_label(raw_label, self.alias_to_canonical)
+            label = canonicalize_label(raw_label, self.alias_to_canonical)
             detections.append(
                 PPEDetection(
                     label=label,
@@ -79,20 +79,20 @@ class MockPPEDetector(PPEDetectorBase):
         return []
 
 
-def _normalize_label(value: str) -> str:
+def normalize_label(value: str) -> str:
     return value.strip().lower().replace("-", "_").replace(" ", "_").replace("/", "_")
 
 
-def _build_alias_index(mapping: Dict[str, List[str]]) -> Dict[str, str]:
+def build_alias_index(mapping: Dict[str, List[str]]) -> Dict[str, str]:
     index: Dict[str, str] = {}
     for canonical, aliases in mapping.items():
-        c = _normalize_label(canonical)
+        c = normalize_label(canonical)
         index[c] = c
         for alias in aliases:
-            index[_normalize_label(str(alias))] = c
+            index[normalize_label(str(alias))] = c
     return index
 
 
-def _canonicalize_label(raw_label: str, alias_index: Dict[str, str]) -> str:
-    normalized = _normalize_label(raw_label)
+def canonicalize_label(raw_label: str, alias_index: Dict[str, str]) -> str:
+    normalized = normalize_label(raw_label)
     return alias_index.get(normalized, normalized)
