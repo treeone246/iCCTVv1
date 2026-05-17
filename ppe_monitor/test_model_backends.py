@@ -67,6 +67,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Skip missing model files with warning instead of raising error.",
     )
+    parser.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Continue benchmarking other models if one model fails at runtime.",
+    )
     return parser.parse_args()
 
 
@@ -219,6 +224,7 @@ def main() -> None:
     results: Dict[str, List[Dict[str, Any]]] = {"pose": [], "ppe": [], "verifier": []}
 
     missing_models: List[str] = []
+    failed_models: List[Dict[str, str]] = []
     for task, paths in model_groups.items():
         for model_path in paths:
             print(f"Benchmarking {task} model: {model_path.as_posix()}")
@@ -240,6 +246,13 @@ def main() -> None:
                     missing_models.append(model_path.as_posix())
                     continue
                 raise
+            except Exception as exc:
+                if args.continue_on_error:
+                    msg = f"{type(exc).__name__}: {exc}"
+                    print(f"WARNING: runtime failure for {model_path.as_posix()} -> {msg}")
+                    failed_models.append({"model_path": model_path.as_posix(), "error": msg})
+                    continue
+                raise
 
     print_report("POSE", results["pose"])
     print_report("PPE", results["ppe"])
@@ -253,6 +266,8 @@ def main() -> None:
         "iou": args.iou,
         "device": args.device,
         "results": results,
+        "missing_models": missing_models,
+        "failed_models": failed_models,
     }
 
     if args.report_json:
@@ -265,6 +280,10 @@ def main() -> None:
         print("\nMissing models skipped:")
         for path in missing_models:
             print(f"- {path}")
+    if failed_models:
+        print("\nModels failed at runtime:")
+        for row in failed_models:
+            print(f"- {row['model_path']}: {row['error']}")
 
 
 if __name__ == "__main__":
