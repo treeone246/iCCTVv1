@@ -1,0 +1,43 @@
+# ============================================================================
+# Jetson Orin Nano Super - JetPack 6.2 profile
+# Target stack:
+# - JetPack 6.2 / Jetson Linux 36.4.3 / Ubuntu 22.04
+# - CUDA 12.6 / cuDNN 9.3 / TensorRT 10.3
+# - Python 3.10 (aarch64)
+# ============================================================================
+#
+# Pre-step (recommended):
+#   python3 -m pip install --upgrade pip setuptools wheel
+#
+# IMPORTANT:
+# - Keep torch/torchvision pinned to the JP6/CUDA12.6 wheels from Jetson AI Lab.
+# - Use numpy 1.26.1 (validated in your environment).
+
+--index-url https://pypi.org/simple
+--extra-index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+--prefer-binary
+
+# Core numeric stack
+numpy==1.26.1
+
+# Jetson CUDA-enabled PyTorch wheels (from Jetson AI Lab index)
+torch==2.8.0 ; platform_system == "Linux" and platform_machine == "aarch64" and python_version == "3.10"
+torchvision==0.23.0 ; platform_system == "Linux" and platform_machine == "aarch64" and python_version == "3.10"
+
+# App runtime
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+pydantic==2.10.6
+PyYAML==6.0.2
+websockets==14.2
+ultralytics==8.4.48
+lap>=0.5.12
+
+# ONNX Runtime for Jetson
+# If your Jetson index serves onnxruntime-gpu, this pin should work directly.
+# If pip cannot resolve this wheel on your device, install Jetson-compatible
+# onnxruntime-gpu manually (then re-run this file without reinstalling ORT).
+onnxruntime-gpu==1.23.0 ; platform_system == "Linux" and platform_machine == "aarch64" and python_version == "3.10"
+
+# Optional test dependency
+pytest==8.3.4

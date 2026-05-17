@@ -11,8 +11,11 @@ The system uses tracked persons, keypoint-aware PPE association, verifier cache 
 ## Quick Start
 
 ```bash
-pip install -r requirements.txt
+python3 -m pip install --upgrade pip setuptools wheel
+python3 -m pip install -r requirements-jetson-orin-nano.txt
 ```
+
+For Jetson Orin Nano Super, use `requirements-jetson-orin-nano.txt`.
 
 Drop models into `models/`:
 
