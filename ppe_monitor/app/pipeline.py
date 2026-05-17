@@ -184,6 +184,7 @@ class MonitoringPipeline:
                 y2=float(det.bbox[3]),
                 conf=float(det.conf),
                 label=det.label,
+                source=det.source,
             )
             for det in ppe_detections
         ]
@@ -457,6 +458,7 @@ class MonitoringPipeline:
                     label=label,
                     bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
                     conf=float(conf[idx]) if conf is not None else 0.0,
+                    source="yoloe_aux",
                 )
             )
         return out

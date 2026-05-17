@@ -48,6 +48,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conf-verifier", type=float, default=-1.0, help="Override verifier confidence threshold.")
     parser.add_argument("--show-skeleton", action="store_true", help="Draw pose keypoints.")
     parser.add_argument("--show-reason-legend", action="store_true", help="Show reason code legend on screen.")
+    parser.add_argument(
+        "--legend-position",
+        type=str,
+        choices=["top-left", "top-right", "bottom-left", "bottom-right"],
+        default="top-right",
+        help="Legend position for reason panel.",
+    )
     parser.add_argument("--max-frames", type=int, default=0, help="Optional frame limit (0 = infinite).")
     return parser.parse_args()
 
@@ -62,19 +69,31 @@ def _human_reason(reason: str) -> str:
     return REASON_LEGEND.get(reason, reason.replace("_", " "))
 
 
-def draw_overlay(frame: Any, payload: Any, show_skeleton: bool, show_reason_legend: bool) -> Any:
+def draw_overlay(
+    frame: Any,
+    payload: Any,
+    show_skeleton: bool,
+    show_reason_legend: bool,
+    legend_position: str,
+) -> Any:
     out = frame.copy()
 
     for det in payload.ppe_detections:
         x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
-        cv2.rectangle(out, (x1, y1), (x2, y2), (200, 120, 0), 2)
+        if getattr(det, "source", None) == "yoloe_aux":
+            box_color = (60, 220, 220)  # yellow-cyan for ensemble detector
+            source_tag = "YOLOE"
+        else:
+            box_color = (200, 120, 0)  # blue-ish for primary detector
+            source_tag = "BEST"
+        cv2.rectangle(out, (x1, y1), (x2, y2), box_color, 2)
         cv2.putText(
             out,
-            f"{det.label}:{det.conf:.2f}",
+            f"{det.label}:{det.conf:.2f} [{source_tag}]",
             (x1, max(12, y1 - 6)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
-            (200, 120, 0),
+            box_color,
             1,
             cv2.LINE_AA,
         )
@@ -142,18 +161,32 @@ def draw_overlay(frame: Any, payload: Any, show_skeleton: bool, show_reason_lege
             "direct_violation = Association violation",
             "verifier_cache_compliant/violation = Cached verifier result",
             "verifier_yoloe_compliant/violation = YOLOE verifier result",
+            "BBox colors: BEST=blue, YOLOE ensemble=yellow",
         ]
-        margin = 10
-        x = 12
-        y = 40
-        line_h = 16
-        panel_w = 520
+        margin = 8
+        line_h = 14
+        panel_w = 500
         panel_h = margin * 2 + line_h * len(lines)
+        h, w = out.shape[:2]
+
+        if legend_position == "top-left":
+            x = 12
+            y = 40
+        elif legend_position == "top-right":
+            x = max(12, w - panel_w - 12)
+            y = 40
+        elif legend_position == "bottom-left":
+            x = 12
+            y = max(24, h - panel_h + 12)
+        else:  # bottom-right
+            x = max(12, w - panel_w - 12)
+            y = max(24, h - panel_h + 12)
+
         cv2.rectangle(out, (x - 6, y - 14), (x - 6 + panel_w, y - 14 + panel_h), (20, 20, 20), -1)
         cv2.rectangle(out, (x - 6, y - 14), (x - 6 + panel_w, y - 14 + panel_h), (140, 140, 140), 1)
         for i, line in enumerate(lines):
             ly = y + i * line_h
-            cv2.putText(out, line, (x, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (240, 240, 240), 1, cv2.LINE_AA)
+            cv2.putText(out, line, (x, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (240, 240, 240), 1, cv2.LINE_AA)
     return out
 
 
@@ -207,6 +240,7 @@ def main() -> None:
                 payload,
                 show_skeleton=args.show_skeleton,
                 show_reason_legend=args.show_reason_legend,
+                legend_position=args.legend_position,
             )
             cv2.imshow(window_name, vis)
 

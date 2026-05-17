@@ -64,6 +64,7 @@ class BBoxPayload(BaseModel):
     conf: float
     label: str
     person_id: Optional[int] = None
+    source: Optional[str] = None
 
 
 class PersonPayload(BaseModel):

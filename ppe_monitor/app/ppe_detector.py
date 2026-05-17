@@ -14,6 +14,7 @@ class PPEDetection:
     label: str
     bbox: Tuple[float, float, float, float]
     conf: float
+    source: str = "ppe_primary"
 
 
 class PPEDetectorBase:
@@ -67,6 +68,7 @@ class YOLOPPEDetector(PPEDetectorBase):
                     label=label,
                     bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
                     conf=float(conf[idx]) if conf is not None else 0.0,
+                    source="ppe_primary",
                 )
             )
         return detections
