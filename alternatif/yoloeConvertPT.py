@@ -8,12 +8,15 @@ classes = [
     "hard hat",
     "industrial coverall jumpsuit",
     "work glove safety glove",
-    "safety glasses protective eyewear",
+    "safety glasses or goggles protective eyewear",
     "safety boot work boot",
+    "hands not using gloves",
+    "safety harness used on person",
+    "socks not wearing safety boots",
 ]
 
 # Generate text-prompt embeddings and set as the model's class vocabulary
 model.set_classes(classes, model.get_text_pe(classes))
 
 # Save — this writes a regular YOLO checkpoint with classes baked into the weights
-model.save("yoloe-ppe.pt")
+model.save("yoloe-ppeRev2.pt")
