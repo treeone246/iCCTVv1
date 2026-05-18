@@ -167,7 +167,7 @@ def main() -> None:
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path.as_posix()}")
 
-    model = YOLO(model_path.as_posix(), task="detect")
+    model = YOLO(model_path.as_posix(), task="segment")
     source = parse_source(args.source)
 
     if isinstance(source, str) and Path(source).suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
