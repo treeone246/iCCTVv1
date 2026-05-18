@@ -250,7 +250,7 @@ def render_status_dashboard(payload: Any) -> np.ndarray:
         compliant = item_counts[item]["COMPLIANT"]
         violation = item_counts[item]["VIOLATION"]
         indet = item_counts[item]["INDETERMINATE"]
-        text = f"{item:<9} ok:{compliant:>2}  bad:{violation:>2}  unk:{indet:>2}"
+        text = f"{item:<9} ok:{compliant:>2}  bad:{violation:>30}  unk:{indet:>20}"
         cv2.putText(canvas, text, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 1, cv2.LINE_AA)
         y += 20
 
