@@ -120,7 +120,7 @@ state_machine:
   # - alert is sent once, then 60s cooldown before another send
   # - any compliant frame refreshes/reset timers for this item
   window_size: 30
-  violation_threshold: 20
+  violation_threshold: 40
   clear_threshold: 1
   confirm_seconds: 2.0
   cooldown_seconds: 60.0
