@@ -126,6 +126,10 @@ body {
   border: 0.5px solid var(--line);
 }
 
+.panel-wide {
+  grid-column: 1 / -1;
+}
+
 .panel h2 {
   margin: 0;
   padding: 10px;
@@ -172,16 +176,63 @@ body {
 .chip.ok {
   color: var(--ok);
   border-color: var(--ok);
+  box-shadow: 0 0 8px rgba(31, 157, 85, 0.25);
 }
 
 .chip.bad {
   color: var(--bad);
   border-color: var(--bad);
+  box-shadow: 0 0 8px rgba(217, 48, 37, 0.35);
 }
 
 .chip.warn {
   color: var(--warn);
   border-color: var(--warn);
+  box-shadow: 0 0 8px rgba(217, 122, 0, 0.25);
+}
+
+.ppe-status-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.ppe-status-card {
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  background: #fafbfd;
+}
+
+.ppe-status-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.ppe-status-stats {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.status-good {
+  border-color: var(--ok);
+  box-shadow: 0 0 14px rgba(31, 157, 85, 0.35);
+}
+
+.status-bad {
+  border-color: var(--bad);
+  box-shadow: 0 0 14px rgba(217, 48, 37, 0.35);
+}
+
+.status-warn {
+  border-color: var(--warn);
+  box-shadow: 0 0 14px rgba(217, 122, 0, 0.35);
+}
+
+.status-neutral {
+  border-color: #536271;
+  box-shadow: 0 0 10px rgba(83, 98, 113, 0.25);
 }
 
 .drawer {
@@ -235,5 +286,9 @@ fieldset {
 
   .panels-row {
     grid-template-columns: 1fr;
+  }
+
+  .ppe-status-grid {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
 }

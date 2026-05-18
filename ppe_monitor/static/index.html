@@ -14,7 +14,7 @@
       </div>
       <div class="right-group">
         <span id="cameraLabel" class="camera-label">Camera: Zone A</span>
-        <button id="settingsBtn" class="icon-btn" aria-label="Settings">⚙</button>
+        <button id="settingsBtn" class="icon-btn" aria-label="Settings">Settings</button>
       </div>
     </header>
 
@@ -43,6 +43,13 @@
     </main>
 
     <section class="panels-row">
+      <div class="panel panel-wide">
+        <h2>PPE Status Dashboard</h2>
+        <div id="ppeStatusPanel" class="panel-body ppe-status-grid"></div>
+      </div>
+    </section>
+
+    <section class="panels-row">
       <div class="panel">
         <h2>Tracked Persons</h2>
         <div id="personsPanel" class="panel-body"></div>
@@ -56,7 +63,7 @@
     <aside id="settingsDrawer" class="drawer hidden">
       <div class="drawer-header">
         <h3>Settings</h3>
-        <button id="closeSettingsBtn" class="icon-btn" aria-label="Close">✕</button>
+        <button id="closeSettingsBtn" class="icon-btn" aria-label="Close">Close</button>
       </div>
       <div class="drawer-body">
         <label>Keypoint Confidence Floor <input id="settingKeypointFloor" type="number" step="0.01" value="0.40" /></label>

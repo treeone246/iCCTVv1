@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 import yaml
 
 from app.main import load_config
@@ -49,6 +50,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--show-skeleton", action="store_true", help="Draw pose keypoints.")
     parser.add_argument("--show-reason-legend", action="store_true", help="Show reason code legend on screen.")
     parser.add_argument(
+        "--hide-status-dashboard",
+        action="store_true",
+        help="Hide separate status dashboard window.",
+    )
+    parser.add_argument(
         "--legend-position",
         type=str,
         choices=["top-left", "top-right", "bottom-left", "bottom-right"],
@@ -77,15 +83,18 @@ def draw_overlay(
     legend_position: str,
 ) -> Any:
     out = frame.copy()
+    source_counts = {"BEST": 0, "YOLOE": 0}
 
     for det in payload.ppe_detections:
         x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
         if getattr(det, "source", None) == "yoloe_aux":
             box_color = (60, 220, 220)  # yellow-cyan for ensemble detector
             source_tag = "YOLOE"
+            source_counts["YOLOE"] += 1
         else:
             box_color = (200, 120, 0)  # blue-ish for primary detector
             source_tag = "BEST"
+            source_counts["BEST"] += 1
         cv2.rectangle(out, (x1, y1), (x2, y2), box_color, 2)
         cv2.putText(
             out,
@@ -148,7 +157,11 @@ def draw_overlay(
                 cv2.circle(out, (int(kp.x), int(kp.y)), 2, color, -1)
 
     m = payload.metrics
-    top = f"FPS:{m.fps:.1f} tracked:{m.tracked_count} active:{m.active_violations} dropped:{m.dropped_frames} verifier/s:{m.verifier_calls_last_sec}"
+    top = (
+        f"FPS:{m.fps:.1f} tracked:{m.tracked_count} active:{m.active_violations} "
+        f"dropped:{m.dropped_frames} verifier/s:{m.verifier_calls_last_sec} "
+        f"det[BEST:{source_counts['BEST']} YOLOE:{source_counts['YOLOE']}]"
+    )
     cv2.putText(out, top, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 2, cv2.LINE_AA)
     cv2.putText(out, top, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1, cv2.LINE_AA)
 
@@ -190,6 +203,90 @@ def draw_overlay(
     return out
 
 
+def _state_value(state: Any) -> str:
+    if hasattr(state, "value"):
+        return str(state.value)
+    return str(state)
+
+
+def _status_color_bgr(state: str) -> tuple[int, int, int]:
+    return STATUS_COLOR.get(state, (128, 128, 128))
+
+
+def render_status_dashboard(payload: Any) -> np.ndarray:
+    width = 520
+    row_h = 32
+    item_col_w = 80
+    items = ["helmet", "gloves", "coverall", "boots", "goggles"]
+    people = list(payload.persons)
+    total_rows = 4 + len(people)
+    height = max(220, 24 + total_rows * row_h)
+
+    canvas = np.zeros((height, width, 3), dtype=np.uint8)
+    canvas[:, :] = (24, 24, 24)
+
+    cv2.putText(
+        canvas,
+        "PPE Status Dashboard",
+        (14, 24),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (245, 245, 245),
+        2,
+        cv2.LINE_AA,
+    )
+
+    # Per-item global counters
+    y = 52
+    item_counts = {it: {"COMPLIANT": 0, "VIOLATION": 0, "INDETERMINATE": 0} for it in items}
+    for person in people:
+        for item in items:
+            state = _state_value(person.per_item_state.get(item, "INDETERMINATE"))
+            if state not in item_counts[item]:
+                state = "INDETERMINATE"
+            item_counts[item][state] += 1
+
+    for item in items:
+        compliant = item_counts[item]["COMPLIANT"]
+        violation = item_counts[item]["VIOLATION"]
+        indet = item_counts[item]["INDETERMINATE"]
+        text = f"{item:<9} ok:{compliant:>2}  bad:{violation:>2}  unk:{indet:>2}"
+        cv2.putText(canvas, text, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 1, cv2.LINE_AA)
+        y += 20
+
+    y += 8
+    cv2.line(canvas, (12, y), (width - 12, y), (75, 75, 75), 1)
+    y += 18
+
+    header = "Person".ljust(8) + "".join(i[:6].upper().ljust(9) for i in items) + "OVERALL"
+    cv2.putText(canvas, header, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (190, 190, 190), 1, cv2.LINE_AA)
+    y += 12
+
+    for person in people:
+        y += row_h
+        pid = f"P{person.person_id}"
+        cv2.putText(canvas, pid, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 1, cv2.LINE_AA)
+
+        x = 86
+        for item in items:
+            state = _state_value(person.per_item_state.get(item, "INDETERMINATE"))
+            if state == "COMPLIANT":
+                mark = "OK"
+            elif state == "VIOLATION":
+                mark = "X"
+            else:
+                mark = "?"
+            color = _status_color_bgr(state)
+            cv2.rectangle(canvas, (x, y - 20), (x + item_col_w - 10, y + 4), (55, 55, 55), 1)
+            cv2.putText(canvas, mark, (x + 26, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.60, color, 2, cv2.LINE_AA)
+            x += item_col_w
+
+        overall = _state_value(person.overall_status)
+        cv2.putText(canvas, overall, (x + 8, y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.50, _status_color_bgr(overall), 2, cv2.LINE_AA)
+
+    return canvas
+
+
 def main() -> None:
     args = parse_args()
     project_root = Path(__file__).resolve().parent
@@ -227,6 +324,7 @@ def main() -> None:
         raise RuntimeError(f"Unable to open source: {args.source}")
 
     window_name = "PPE Monitor Live (q or ESC to quit)"
+    dashboard_window_name = "PPE Status Dashboard"
     frame_id = 0
     try:
         while True:
@@ -243,6 +341,9 @@ def main() -> None:
                 legend_position=args.legend_position,
             )
             cv2.imshow(window_name, vis)
+            if not args.hide_status_dashboard:
+                status_dash = render_status_dashboard(payload)
+                cv2.imshow(dashboard_window_name, status_dash)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q") or key == 27:

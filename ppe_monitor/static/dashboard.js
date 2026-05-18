@@ -2,6 +2,7 @@ const canvas = document.getElementById("overlayCanvas");
 const ctx = canvas.getContext("2d");
 const personsPanel = document.getElementById("personsPanel");
 const alertsPanel = document.getElementById("alertsPanel");
+const ppeStatusPanel = document.getElementById("ppeStatusPanel");
 
 const metricTracked = document.getElementById("metricTracked");
 const metricViolations = document.getElementById("metricViolations");
@@ -21,6 +22,7 @@ const STATUS_COLOR = {
 
 const acknowledgedAlerts = new Set();
 let pendingBlob = null;
+const REQUIRED_ITEMS = ["helmet", "gloves", "coverall", "boots", "goggles"];
 
 settingsBtn.addEventListener("click", () => settingsDrawer.classList.remove("hidden"));
 closeSettingsBtn.addEventListener("click", () => settingsDrawer.classList.add("hidden"));
@@ -131,12 +133,77 @@ function drawSkeleton(keypoints, color) {
 
 function drawPPEDetections(detections) {
   for (const det of detections) {
-    ctx.strokeStyle = "#005eaa";
+    const isYoloe = det.source === "yoloe_aux";
+    ctx.strokeStyle = isYoloe ? "#13a6a6" : "#005eaa";
     ctx.lineWidth = 1;
     ctx.strokeRect(det.x1, det.y1, det.x2 - det.x1, det.y2 - det.y1);
-    ctx.fillStyle = "#005eaa";
+    ctx.fillStyle = isYoloe ? "#13a6a6" : "#005eaa";
     ctx.font = "11px Segoe UI";
-    ctx.fillText(`${det.label} ${det.conf.toFixed(2)}`, det.x1, Math.max(12, det.y1 - 3));
+    const src = isYoloe ? "YOLOE" : "BEST";
+    ctx.fillText(`${det.label} ${det.conf.toFixed(2)} [${src}]`, det.x1, Math.max(12, det.y1 - 3));
+  }
+}
+
+function normalizeState(state) {
+  if (state === "COMPLIANT" || state === "VIOLATION" || state === "INDETERMINATE") {
+    return state;
+  }
+  return "INDETERMINATE";
+}
+
+function makeItemSummary(persons) {
+  const summary = {};
+  for (const item of REQUIRED_ITEMS) {
+    summary[item] = { COMPLIANT: 0, VIOLATION: 0, INDETERMINATE: 0, total: 0 };
+  }
+
+  for (const person of persons) {
+    const states = person.per_item_state || {};
+    for (const item of REQUIRED_ITEMS) {
+      const state = normalizeState(states[item]);
+      summary[item][state] += 1;
+      summary[item].total += 1;
+    }
+  }
+  return summary;
+}
+
+function renderPPEStatusDashboard(persons) {
+  ppeStatusPanel.innerHTML = "";
+  const summary = makeItemSummary(persons);
+  const personRollup = { COMPLIANT: 0, VIOLATION: 0, INDETERMINATE: 0 };
+  for (const person of persons) {
+    const state = normalizeState(person.overall_status);
+    personRollup[state] += 1;
+  }
+
+  const rollupCard = document.createElement("div");
+  rollupCard.className = "ppe-status-card status-neutral";
+  rollupCard.innerHTML = `
+    <div class="ppe-status-title">PERSON STATUS</div>
+    <div class="ppe-status-stats">OK: ${personRollup.COMPLIANT} | BAD: ${personRollup.VIOLATION} | UNK: ${personRollup.INDETERMINATE}</div>
+  `;
+  ppeStatusPanel.appendChild(rollupCard);
+
+  for (const item of REQUIRED_ITEMS) {
+    const row = summary[item];
+    const card = document.createElement("div");
+    const dominantState =
+      row.VIOLATION > 0 ? "VIOLATION" : row.COMPLIANT > 0 ? "COMPLIANT" : "INDETERMINATE";
+
+    const stateClass =
+      dominantState === "COMPLIANT"
+        ? "status-good"
+        : dominantState === "VIOLATION"
+        ? "status-bad"
+        : "status-warn";
+
+    card.className = `ppe-status-card ${stateClass}`;
+    card.innerHTML = `
+      <div class="ppe-status-title">${item.toUpperCase()}</div>
+      <div class="ppe-status-stats">OK: ${row.COMPLIANT} | BAD: ${row.VIOLATION} | UNK: ${row.INDETERMINATE}</div>
+    `;
+    ppeStatusPanel.appendChild(card);
   }
 }
 
@@ -147,8 +214,11 @@ function updatePanels(payload) {
   metricCompliance.textContent = `${Number(metrics.compliance_rate ?? 0).toFixed(1)}%`;
   metricFps.textContent = String(metrics.fps ?? 0);
 
+  const persons = payload.persons || [];
+  renderPPEStatusDashboard(persons);
+
   personsPanel.innerHTML = "";
-  for (const person of payload.persons || []) {
+  for (const person of persons) {
     const card = document.createElement("div");
     card.className = "person-card";
     card.innerHTML = `<div><strong>Person ${person.person_id}</strong> - ${person.overall_status}</div>`;

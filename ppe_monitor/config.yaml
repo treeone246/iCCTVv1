@@ -26,7 +26,7 @@ inference:
 
 detector_ensemble:
   enabled: true
-  yoloe_conf_threshold: 0.30
+  yoloe_conf_threshold: 0.20
   iou_nms_threshold: 0.50
   allowed_items: [helmet, goggles, gloves, boots, coverall]
 
