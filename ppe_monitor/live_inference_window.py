@@ -15,6 +15,13 @@ import yaml
 
 from app.main import load_config
 from app.pipeline import MonitoringPipeline
+from app.compliance_events import ComplianceEventWriter
+from app.ppe_memory import (
+    PPEMemoryConfig,
+    PPEMemoryManager,
+    PersonState,
+    build_ppe_observations_for_person,
+)
 from app.startup_check import load_runtime_components
 
 
@@ -22,6 +29,14 @@ STATUS_COLOR = {
     "COMPLIANT": (40, 180, 40),
     "VIOLATION": (30, 30, 220),
     "INDETERMINATE": (0, 165, 255),
+}
+
+MEMORY_STATE_COLOR = {
+    PersonState.COMPLIANT_CONFIRMED.value: (40, 180, 40),      # green
+    PersonState.COMPLIANT_CANDIDATE.value: (0, 200, 200),      # yellow-ish
+    PersonState.VIOLATION_CANDIDATE.value: (0, 165, 255),      # orange
+    PersonState.VIOLATION_CONFIRMED.value: (30, 30, 220),      # red
+    PersonState.UNKNOWN.value: (128, 128, 128),                # gray
 }
 
 REASON_LEGEND = {
@@ -46,11 +61,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ppe-model", type=str, default="", help="Override PPE model path (.onnx or .engine).")
     parser.add_argument("--verifier-model", type=str, default="", help="Override verifier model path (.onnx or .engine).")
     parser.add_argument("--imgsz", type=int, default=640, help="Inference image size.")
+    parser.add_argument("--device", type=str, default="", help='Optional device hint: "cpu", "auto", or GPU index like "0".')
     parser.add_argument("--conf-pose", type=float, default=-1.0, help="Override pose confidence threshold.")
     parser.add_argument("--conf-ppe", type=float, default=-1.0, help="Override PPE confidence threshold.")
     parser.add_argument("--conf-verifier", type=float, default=-1.0, help="Override verifier confidence threshold.")
     parser.add_argument("--show-skeleton", action="store_true", help="Draw pose keypoints.")
     parser.add_argument("--show-reason-legend", action="store_true", help="Show reason code legend on screen.")
+    parser.add_argument("--enable-memory", action="store_true", help="Enable per-track PPE compliance memory anti-spam.")
+    parser.add_argument("--memory-window", type=int, default=30, help="Memory vote window frames.")
+    parser.add_argument("--alert-cooldown", type=float, default=60.0, help="Cooldown seconds between repeated alerts.")
+    parser.add_argument(
+        "--events-jsonl",
+        type=str,
+        default="outputs/compliance_events.jsonl",
+        help="JSONL path for confirmed violation events when memory is enabled.",
+    )
     parser.add_argument(
         "--hide-status-dashboard",
         action="store_true",
@@ -83,6 +108,8 @@ def draw_overlay(
     show_skeleton: bool,
     show_reason_legend: bool,
     legend_position: str,
+    memory_state_by_person: dict[int, str] | None = None,
+    memory_label_by_person: dict[int, str] | None = None,
 ) -> Any:
     out = frame.copy()
     source_counts = {"BEST": 0, "YOLOE": 0}
@@ -111,11 +138,18 @@ def draw_overlay(
 
     for person in payload.persons:
         x1, y1, x2, y2 = [int(v) for v in person.bbox]
-        color = STATUS_COLOR.get(person.overall_status, (128, 128, 128))
+        pid = int(person.person_id)
+        memory_state = memory_state_by_person.get(pid) if memory_state_by_person else None
+        if memory_state:
+            color = MEMORY_STATE_COLOR.get(memory_state, (128, 128, 128))
+            person_line = memory_label_by_person.get(pid, f"ID {pid} | {memory_state}") if memory_label_by_person else f"ID {pid} | {memory_state}"
+        else:
+            color = STATUS_COLOR.get(person.overall_status, (128, 128, 128))
+            person_line = f"ID {person.person_id} {person.overall_status}"
         cv2.rectangle(out, (x1, y1), (x2, y2), color, 2)
         cv2.putText(
             out,
-            f"ID {person.person_id} {person.overall_status}",
+            person_line,
             (x1, max(16, y1 - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
@@ -307,6 +341,106 @@ def render_status_dashboard(payload: Any) -> np.ndarray:
     return canvas
 
 
+def _item_visible_from_keypoints(person: Any, item: str, conf_floor: float = 0.4) -> bool:
+    keypoint_groups = {
+        "helmet": ["nose", "left_eye", "right_eye"],
+        "safety_glasses": ["left_eye", "right_eye"],
+        "gloves": ["left_wrist", "right_wrist"],
+        "boots": ["left_ankle", "right_ankle"],
+        "coverall": ["left_shoulder", "right_shoulder", "left_hip", "right_hip"],
+    }
+    names = keypoint_groups.get(item, [])
+    if not names:
+        return True
+    kp_map = getattr(person, "keypoints", {}) or {}
+    visible = 0
+    for name in names:
+        kp = kp_map.get(name)
+        if kp is None:
+            continue
+        conf = float(getattr(kp, "conf", 0.0))
+        if conf >= conf_floor:
+            visible += 1
+    return visible > 0
+
+
+def _status_to_classification_text(item_status: str) -> str:
+    if item_status == "OK":
+        return "COMPLIANT"
+    if item_status == "VIOLATION":
+        return "VIOLATION"
+    return "INDETERMINATE"
+
+
+def apply_memory_layer(
+    payload: Any,
+    manager: PPEMemoryManager,
+    events: ComplianceEventWriter | None,
+    camera_id: str,
+) -> tuple[dict[int, str], dict[int, str]]:
+    memory_state_by_person: dict[int, str] = {}
+    memory_label_by_person: dict[int, str] = {}
+
+    for person in payload.persons:
+        pid = int(person.person_id)
+        person_box = tuple(float(v) for v in person.bbox)
+        observations = build_ppe_observations_for_person(
+            person_box=person_box,
+            detections=payload.ppe_detections,
+            names=None,
+        )
+
+        # Use keypoint visibility to assign None when body part is not evaluable.
+        for item in ["helmet", "coverall", "gloves", "safety_glasses", "boots"]:
+            if not _item_visible_from_keypoints(person, item):
+                observations[item] = None
+
+        # TODO: Production mode should always rely on real tracker IDs from ByteTrack/BoT-SORT/DeepStream nvtracker.
+        memory = manager.update_track(camera_id=camera_id, track_id=pid, observations=observations, bbox=person_box)
+        if events is not None and memory.should_emit_alert():
+            events.write_alert(memory)
+
+        item_stats = memory.item_statuses()
+        mapped = {
+            "helmet": _status_to_classification_text(item_stats["helmet"].value),
+            "coverall": _status_to_classification_text(item_stats["coverall"].value),
+            "gloves": _status_to_classification_text(item_stats["gloves"].value),
+            "goggles": _status_to_classification_text(item_stats["safety_glasses"].value),
+            "boots": _status_to_classification_text(item_stats["boots"].value),
+        }
+        mapped_reason = {
+            "helmet": item_stats["helmet"].value.lower(),
+            "coverall": item_stats["coverall"].value.lower(),
+            "gloves": item_stats["gloves"].value.lower(),
+            "goggles": item_stats["safety_glasses"].value.lower(),
+            "boots": item_stats["boots"].value.lower(),
+        }
+        person.per_item_state = mapped
+        person.per_item_reason = mapped_reason
+
+        state = memory.state.value
+        memory_state_by_person[pid] = state
+
+        if state == PersonState.COMPLIANT_CONFIRMED.value:
+            person.overall_status = "COMPLIANT"
+        elif state == PersonState.VIOLATION_CONFIRMED.value:
+            person.overall_status = "VIOLATION"
+        else:
+            person.overall_status = "INDETERMINATE"
+
+        short = (
+            f"H:{item_stats['helmet'].value[0]} "
+            f"C:{item_stats['coverall'].value[0]} "
+            f"G:{item_stats['gloves'].value[0]} "
+            f"E:{item_stats['safety_glasses'].value[0]} "
+            f"B:{item_stats['boots'].value[0]}"
+        )
+        memory_label_by_person[pid] = f"ID {pid} | {state} | {short}"
+
+    manager.cleanup()
+    return memory_state_by_person, memory_label_by_person
+
+
 def main() -> None:
     args = parse_args()
     project_root = Path(__file__).resolve().parent
@@ -323,6 +457,15 @@ def main() -> None:
         config["models"]["verifier"] = args.verifier_model
 
     config["inference"]["imgsz"] = int(args.imgsz)
+    if args.device:
+        d = str(args.device).strip().lower()
+        if d == "cpu":
+            config["inference"]["device"] = "cpu"
+        elif d in {"auto", "cuda"}:
+            config["inference"]["device"] = "auto"
+        else:
+            # Numeric GPU index maps to auto/CUDA path in current startup loader.
+            config["inference"]["device"] = "auto"
     if args.conf_pose >= 0:
         config["inference"]["conf_threshold_pose"] = float(args.conf_pose)
     if args.conf_ppe >= 0:
@@ -337,6 +480,16 @@ def main() -> None:
         verifier=runtime.verifier,
         config=config,
     )
+
+    memory_manager: PPEMemoryManager | None = None
+    event_writer: ComplianceEventWriter | None = None
+    if args.enable_memory:
+        mem_cfg = PPEMemoryConfig(
+            vote_window_frames=int(args.memory_window),
+            alert_cooldown_sec=float(args.alert_cooldown),
+        )
+        memory_manager = PPEMemoryManager(mem_cfg)
+        event_writer = ComplianceEventWriter(path=args.events_jsonl)
 
     source = parse_source(args.source)
     cap = cv2.VideoCapture(source)
@@ -353,12 +506,23 @@ def main() -> None:
                 break
 
             payload, _ = pipeline.process_frame(frame, frame_id)
+            memory_state_by_person: dict[int, str] = {}
+            memory_label_by_person: dict[int, str] = {}
+            if memory_manager is not None:
+                memory_state_by_person, memory_label_by_person = apply_memory_layer(
+                    payload=payload,
+                    manager=memory_manager,
+                    events=event_writer,
+                    camera_id=str(args.source),
+                )
             vis = draw_overlay(
                 frame,
                 payload,
                 show_skeleton=args.show_skeleton,
                 show_reason_legend=args.show_reason_legend,
                 legend_position=args.legend_position,
+                memory_state_by_person=memory_state_by_person,
+                memory_label_by_person=memory_label_by_person,
             )
             cv2.imshow(window_name, vis)
             if not args.hide_status_dashboard:

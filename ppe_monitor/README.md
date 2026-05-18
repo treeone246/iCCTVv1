@@ -82,6 +82,36 @@ Config keys:
 The pipeline converts uncertain VLM answers to `INDETERMINATE`, which reduces
 dashboard alert spam by design due to state-machine hysteresis.
 
+### PPE Compliance Memory / Anti-Spam Status
+
+Frame-by-frame detection can cause dashboard status flicker (`OK -> VIOLATION -> OK`)
+when detections momentarily fail due to blur, occlusion, or motion.
+
+This project includes an optional memory layer for the same tracked `track_id`
+within the same camera/session:
+
+- per-item temporal voting in a recent frame window
+- per-track state machine (`*_CANDIDATE` -> `*_CONFIRMED`)
+- stable status hold during short unclear flicker
+- alert cooldown to prevent duplicate alert spam
+
+This first version does **not** perform long-term identity re-identification. If
+a person leaves and returns with a new `track_id`, they are treated as a new track.
+
+Runtime entry script for this mode: `live_inference_window.py`
+
+```bash
+python3 live_inference_window.py \
+  --source ./videos/simulationTest2.mp4 \
+  --ppe-model models/best2.engine \
+  --device 0 \
+  --imgsz 640 \
+  --enable-memory \
+  --memory-window 30 \
+  --alert-cooldown 60 \
+  --events-jsonl outputs/compliance_events.jsonl
+```
+
 ## ONNX Caveats
 
 - TensorRT export is the next optimization step once ONNX flow is stable.
