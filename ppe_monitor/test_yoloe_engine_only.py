@@ -29,8 +29,8 @@ def parse_args() -> argparse.Namespace:
         help='Video source: webcam index like "0", or path to video/image.',
     )
     parser.add_argument("--imgsz", type=int, default=640, help="Inference image size.")
-    parser.add_argument("--conf", type=float, default=0.25, help="Confidence threshold.")
-    parser.add_argument("--iou", type=float, default=0.45, help="IoU threshold.")
+    parser.add_argument("--conf", type=float, default=0.1, help="Confidence threshold.")
+    parser.add_argument("--iou", type=float, default=0.3, help="IoU threshold.")
     parser.add_argument("--device", type=str, default="0", help='Device, e.g. "0" or "cpu".')
     parser.add_argument("--show", action="store_true", help="Show live inference window.")
     parser.add_argument(
