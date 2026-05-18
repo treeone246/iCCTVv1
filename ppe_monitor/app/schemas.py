@@ -101,6 +101,13 @@ class MetricsPayload(BaseModel):
     dropped_frames: int
     active_violations: int
     compliance_rate: float
+    ppe_primary_raw: int = 0
+    verifier_aux_raw: int = 0
+    ppe_merged: int = 0
+    ppe_infer_calls: int = 0
+    verifier_aux_infer_calls: int = 0
+    ppe_model: str = ""
+    ppe_task: str = ""
 
 
 class FramePayload(BaseModel):

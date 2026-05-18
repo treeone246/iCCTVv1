@@ -168,7 +168,7 @@ function makeItemSummary(persons) {
   return summary;
 }
 
-function renderPPEStatusDashboard(persons) {
+function renderPPEStatusDashboard(persons, metrics) {
   ppeStatusPanel.innerHTML = "";
   const summary = makeItemSummary(persons);
   const personRollup = { COMPLIANT: 0, VIOLATION: 0, INDETERMINATE: 0 };
@@ -184,6 +184,17 @@ function renderPPEStatusDashboard(persons) {
     <div class="ppe-status-stats">OK: ${personRollup.COMPLIANT} | BAD: ${personRollup.VIOLATION} | UNK: ${personRollup.INDETERMINATE}</div>
   `;
   ppeStatusPanel.appendChild(rollupCard);
+
+  const runtimeCard = document.createElement("div");
+  runtimeCard.className = "ppe-status-card status-neutral";
+  const modelName = (metrics.ppe_model || "").split("/").pop() || "unknown";
+  runtimeCard.innerHTML = `
+    <div class="ppe-status-title">MODEL RUNTIME</div>
+    <div class="ppe-status-stats">${modelName} (${metrics.ppe_task || "detect"})</div>
+    <div class="ppe-status-stats">raw/frame BEST2:${metrics.ppe_primary_raw ?? 0} YOLOE:${metrics.verifier_aux_raw ?? 0} merged:${metrics.ppe_merged ?? 0}</div>
+    <div class="ppe-status-stats">infer calls BEST2:${metrics.ppe_infer_calls ?? 0} YOLOE:${metrics.verifier_aux_infer_calls ?? 0}</div>
+  `;
+  ppeStatusPanel.appendChild(runtimeCard);
 
   for (const item of REQUIRED_ITEMS) {
     const row = summary[item];
@@ -215,7 +226,7 @@ function updatePanels(payload) {
   metricFps.textContent = String(metrics.fps ?? 0);
 
   const persons = payload.persons || [];
-  renderPPEStatusDashboard(persons);
+  renderPPEStatusDashboard(persons, metrics);
 
   personsPanel.innerHTML = "";
   for (const person of persons) {

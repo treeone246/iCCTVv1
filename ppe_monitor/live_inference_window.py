@@ -88,11 +88,11 @@ def draw_overlay(
     for det in payload.ppe_detections:
         x1, y1, x2, y2 = int(det.x1), int(det.y1), int(det.x2), int(det.y2)
         if getattr(det, "source", None) == "yoloe_aux":
-            box_color = (60, 220, 220)  # yellow-cyan for ensemble detector
+            box_color = (0, 215, 255)  # orange for YOLOE auxiliary detector
             source_tag = "YOLOE"
             source_counts["YOLOE"] += 1
         else:
-            box_color = (200, 120, 0)  # blue-ish for primary detector
+            box_color = (255, 0, 0)  # strong blue for BEST2 primary detector
             source_tag = "BEST"
             source_counts["BEST"] += 1
         cv2.rectangle(out, (x1, y1), (x2, y2), box_color, 2)
@@ -160,7 +160,8 @@ def draw_overlay(
     top = (
         f"FPS:{m.fps:.1f} tracked:{m.tracked_count} active:{m.active_violations} "
         f"dropped:{m.dropped_frames} verifier/s:{m.verifier_calls_last_sec} "
-        f"det[BEST:{source_counts['BEST']} YOLOE:{source_counts['YOLOE']}]"
+        f"raw[BEST:{getattr(m, 'ppe_primary_raw', 0)} YOLOE:{getattr(m, 'verifier_aux_raw', 0)}] "
+        f"out[BEST:{source_counts['BEST']} YOLOE:{source_counts['YOLOE']}]"
     )
     cv2.putText(out, top, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (240, 240, 240), 2, cv2.LINE_AA)
     cv2.putText(out, top, (12, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (20, 20, 20), 1, cv2.LINE_AA)
@@ -236,8 +237,22 @@ def render_status_dashboard(payload: Any) -> np.ndarray:
         cv2.LINE_AA,
     )
 
+    m = payload.metrics
+    model_line = f"PPE model: {Path(getattr(m, 'ppe_model', '')).name or 'unknown'} ({getattr(m, 'ppe_task', 'detect')})"
+    infer_line = (
+        f"infer calls: BEST2={getattr(m, 'ppe_infer_calls', 0)} "
+        f"YOLOEaux={getattr(m, 'verifier_aux_infer_calls', 0)}"
+    )
+    raw_line = (
+        f"raw/frame: BEST2={getattr(m, 'ppe_primary_raw', 0)} "
+        f"YOLOEaux={getattr(m, 'verifier_aux_raw', 0)} merged={getattr(m, 'ppe_merged', 0)}"
+    )
+    cv2.putText(canvas, model_line, (14, 42), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
+    cv2.putText(canvas, infer_line, (14, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
+    cv2.putText(canvas, raw_line, (14, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
+
     # Per-item global counters
-    y = 52
+    y = 104
     item_counts = {it: {"COMPLIANT": 0, "VIOLATION": 0, "INDETERMINATE": 0} for it in items}
     for person in people:
         for item in items:

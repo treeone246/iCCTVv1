@@ -152,6 +152,12 @@ class MonitoringPipeline:
         self._last_frame_perf: float | None = None
         self._fps = 0.0
         self._stable_states: Dict[Tuple[int, str], StableStateTracker] = {}
+        self._frames_processed = 0
+        self._ppe_infer_calls = 0
+        self._verifier_aux_infer_calls = 0
+        self._last_detector_counts = {"ppe_primary_raw": 0, "verifier_aux_raw": 0, "ppe_merged": 0}
+        self._ppe_model_path = str(config.get("models", {}).get("ppe", ""))
+        self._ppe_task = "detect"
 
         stability_cfg = config.get("status_stability", {})
         self.stable_compliant_enter = int(stability_cfg.get("compliant_enter_frames", 2))
@@ -165,6 +171,7 @@ class MonitoringPipeline:
             self.dropped_frames += int(count)
 
     def process_frame(self, frame: np.ndarray, frame_id: int) -> tuple[FramePayload, bytes]:
+        self._frames_processed += 1
         frame_jpeg = self._encode_frame(frame)
         tracked_people = self.pose_tracker.track(frame)
         self._prune_stability_state(tracked_people)
@@ -447,6 +454,13 @@ class MonitoringPipeline:
             dropped_frames=self.dropped_frames,
             active_violations=self.state_machine.active_alerts_count(),
             compliance_rate=round(compliance_rate, 2),
+            ppe_primary_raw=int(self._last_detector_counts.get("ppe_primary_raw", 0)),
+            verifier_aux_raw=int(self._last_detector_counts.get("verifier_aux_raw", 0)),
+            ppe_merged=int(self._last_detector_counts.get("ppe_merged", 0)),
+            ppe_infer_calls=self._ppe_infer_calls,
+            verifier_aux_infer_calls=self._verifier_aux_infer_calls,
+            ppe_model=self._ppe_model_path,
+            ppe_task=self._ppe_task,
         )
 
     def _overall_status(self, per_item_state: Dict[str, Classification]) -> OverallStatus:
@@ -619,20 +633,38 @@ class MonitoringPipeline:
 
     def _detect_ppe(self, frame: np.ndarray) -> List[PPEDetection]:
         """Run primary detector and optional YOLOE ensemble detector."""
+        self._ppe_infer_calls += 1
         primary = self.ppe_detector.detect(frame)
         if not self.ensemble_enabled:
+            self._last_detector_counts = {
+                "ppe_primary_raw": len(primary),
+                "verifier_aux_raw": 0,
+                "ppe_merged": len(primary),
+            }
             return primary
 
         yoloe = self._detect_with_verifier_model(frame)
         combined = primary + yoloe
         if not combined:
+            self._last_detector_counts = {
+                "ppe_primary_raw": len(primary),
+                "verifier_aux_raw": len(yoloe),
+                "ppe_merged": 0,
+            }
             return combined
-        return self._nms_merge_detections(combined, iou_threshold=self.ensemble_iou_nms)
+        merged = self._nms_merge_detections(combined, iou_threshold=self.ensemble_iou_nms)
+        self._last_detector_counts = {
+            "ppe_primary_raw": len(primary),
+            "verifier_aux_raw": len(yoloe),
+            "ppe_merged": len(merged),
+        }
+        return merged
 
     def _detect_with_verifier_model(self, frame: np.ndarray) -> List[PPEDetection]:
         """Use verifier model as an auxiliary full-frame detector for recall boost."""
         if not hasattr(self.verifier, "model"):
             return []
+        self._verifier_aux_infer_calls += 1
         model = getattr(self.verifier, "model")
         imgsz = getattr(self.verifier, "imgsz", self.config["inference"]["imgsz"])
 
