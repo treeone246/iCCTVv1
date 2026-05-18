@@ -7,6 +7,7 @@ models:
   pose: models/yolo26n-pose.onnx
   ppe: models/best.onnx
   verifier: models/yoloe-ppeRev2.onnx
+  verifier_task: segment
   allow_mock_models: true
 
 ppe_label_aliases:

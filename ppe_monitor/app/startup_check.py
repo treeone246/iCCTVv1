@@ -141,6 +141,7 @@ def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponen
     allow_mock = bool(config["models"]["allow_mock_models"])
     infer_cfg = config["inference"]
     model_cfg = config["models"]
+    verifier_task = str(model_cfg.get("verifier_task", "detect"))
 
     device = str(infer_cfg.get("device", "auto")).lower()
     provider_pref = _provider_preference(device)
@@ -150,7 +151,7 @@ def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponen
     specs = [
         ("pose", model_cfg["pose"], "pose"),
         ("ppe", model_cfg["ppe"], "detect"),
-        ("verifier", model_cfg["verifier"], "detect"),
+        ("verifier", model_cfg["verifier"], verifier_task),
     ]
 
     provider_info: Dict[str, dict] = {}
