@@ -41,6 +41,8 @@ class ItemDecision:
 
     classification: Classification
     reason: str
+    positive_conf: float = 0.0
+    negative_conf: float = 0.0
 
 
 @dataclass
@@ -51,6 +53,9 @@ class StableStateTracker:
     compliant_streak: int = 0
     violation_streak: int = 0
     indeterminate_streak: int = 0
+    score: float = 0.0
+    positive_memory: float = 0.0
+    negative_memory: float = 0.0
 
 
 def log_event(event_type: str, frame_id: int, person_id: int, **fields: object) -> None:
@@ -169,6 +174,21 @@ class MonitoringPipeline:
         self.stable_indeterminate_enter = int(stability_cfg.get("indeterminate_enter_frames", 8))
         self.stable_per_item = dict(stability_cfg.get("per_item", {}))
 
+        mem_cfg = config.get("compliance_memory", {})
+        self.mem_assume_compliant = bool(mem_cfg.get("assume_compliant", True))
+        self.mem_prior_score = float(mem_cfg.get("prior_compliant_score", 5.0))
+        self.mem_decay = float(mem_cfg.get("decay", 0.96))
+        self.mem_positive_gain = float(mem_cfg.get("positive_gain", 1.0))
+        self.mem_negative_gain = float(mem_cfg.get("negative_gain", 1.2))
+        self.mem_compliant_bonus = float(mem_cfg.get("compliant_bonus", 1.0))
+        self.mem_violation_penalty = float(mem_cfg.get("violation_penalty", 1.1))
+        self.mem_indeterminate_decay = float(mem_cfg.get("indeterminate_decay", 0.985))
+        self.mem_ok_threshold = float(mem_cfg.get("ok_threshold", 4.0))
+        self.mem_bad_threshold = float(mem_cfg.get("bad_threshold", -4.0))
+        self.mem_dominance_ratio = float(mem_cfg.get("dominance_ratio", 1.15))
+        self.mem_dominance_min_negative = float(mem_cfg.get("dominance_min_negative", 2.5))
+        self.mem_max_abs_score = float(mem_cfg.get("max_abs_score", 20.0))
+
     def increment_dropped_frames(self, count: int) -> None:
         if count > 0:
             self.dropped_frames += int(count)
@@ -189,7 +209,13 @@ class MonitoringPipeline:
                 decision = self._classify_person_item_with_reason(person, ppe_detections, item, frame)
                 item_state_raw = decision.classification
                 per_item_state_raw[item] = item_state_raw
-                item_state = self._stabilize_display_state(person.person_id, item, item_state_raw)
+                item_state = self._stabilize_display_state(
+                    person.person_id,
+                    item,
+                    item_state_raw,
+                    positive_conf=decision.positive_conf,
+                    negative_conf=decision.negative_conf,
+                )
                 per_item_state[item] = item_state
                 if item_state != item_state_raw:
                     per_item_reason[item] = f"stabilized_hold_{item_state_raw.value.lower()}"
@@ -278,13 +304,17 @@ class MonitoringPipeline:
         person_id: int,
         item: str,
         raw_state: Classification,
+        positive_conf: float = 0.0,
+        negative_conf: float = 0.0,
     ) -> Classification:
         key = (person_id, item)
         tracker = self._stable_states.get(key)
         if tracker is None:
-            tracker = StableStateTracker(stable=raw_state)
+            initial_stable = Classification.COMPLIANT if self.mem_assume_compliant else raw_state
+            initial_score = self.mem_prior_score if self.mem_assume_compliant else 0.0
+            tracker = StableStateTracker(stable=initial_stable, score=initial_score)
             self._stable_states[key] = tracker
-            return raw_state
+            # If we received a strong negative first frame, allow immediate evaluation below.
 
         if raw_state == Classification.COMPLIANT:
             tracker.compliant_streak += 1
@@ -299,6 +329,23 @@ class MonitoringPipeline:
             tracker.compliant_streak = 0
             tracker.violation_streak = 0
 
+        # Temporal evidence memory with compliant prior bias.
+        tracker.positive_memory = tracker.positive_memory * self.mem_decay + max(0.0, positive_conf) * self.mem_positive_gain
+        tracker.negative_memory = tracker.negative_memory * self.mem_decay + max(0.0, negative_conf) * self.mem_negative_gain
+
+        if raw_state == Classification.COMPLIANT:
+            tracker.score += self.mem_compliant_bonus
+        elif raw_state == Classification.VIOLATION:
+            tracker.score -= self.mem_violation_penalty
+        else:
+            tracker.score *= self.mem_indeterminate_decay
+
+        # Confidence evidence nudges score every frame.
+        tracker.score += (max(0.0, positive_conf) * self.mem_positive_gain) - (
+            max(0.0, negative_conf) * self.mem_negative_gain
+        )
+        tracker.score = max(-self.mem_max_abs_score, min(self.mem_max_abs_score, tracker.score))
+
         stable = tracker.stable
         violation_enter = self._stability_threshold(item, "violation_enter_frames", self.stable_violation_enter)
         compliant_enter = self._stability_threshold(item, "compliant_enter_frames", self.stable_compliant_enter)
@@ -312,6 +359,25 @@ class MonitoringPipeline:
             "indeterminate_enter_frames",
             self.stable_indeterminate_enter,
         )
+
+        negative_dominates = (
+            tracker.negative_memory >= self.mem_dominance_min_negative
+            and tracker.negative_memory > tracker.positive_memory * self.mem_dominance_ratio
+        )
+        positive_dominates = tracker.positive_memory > tracker.negative_memory * self.mem_dominance_ratio
+
+        # Dominance gates have highest priority: if negatives outrun positives, flip to violation.
+        if negative_dominates:
+            if tracker.violation_streak >= max(1, violation_enter - 1):
+                stable = Classification.VIOLATION
+        elif positive_dominates and tracker.compliant_streak >= compliant_enter:
+            stable = Classification.COMPLIANT
+        elif tracker.score >= self.mem_ok_threshold and tracker.compliant_streak >= compliant_enter:
+            stable = Classification.COMPLIANT
+        elif tracker.score <= self.mem_bad_threshold and tracker.violation_streak >= violation_enter:
+            stable = Classification.VIOLATION
+
+        # Secondary hysteresis fallback.
         if stable == Classification.COMPLIANT:
             if tracker.violation_streak >= violation_enter:
                 stable = Classification.VIOLATION
@@ -380,17 +446,42 @@ class MonitoringPipeline:
 
         if not needs_verifier:
             if base_classification == Classification.COMPLIANT:
-                return ItemDecision(base_classification, "detected_and_spatially_bound")
+                return ItemDecision(
+                    base_classification,
+                    "detected_and_spatially_bound",
+                    positive_conf=vctx.positive_conf,
+                    negative_conf=vctx.negative_conf,
+                )
             if base_classification == Classification.INDETERMINATE:
-                return ItemDecision(base_classification, "keypoint_not_visible_or_out_of_frame")
+                return ItemDecision(
+                    base_classification,
+                    "keypoint_not_visible_or_out_of_frame",
+                    positive_conf=vctx.positive_conf,
+                    negative_conf=vctx.negative_conf,
+                )
             if bind is not None and bind.held:
-                return ItemDecision(base_classification, "detected_but_held_not_worn")
-            return ItemDecision(base_classification, "direct_violation")
+                return ItemDecision(
+                    base_classification,
+                    "detected_but_held_not_worn",
+                    positive_conf=vctx.positive_conf,
+                    negative_conf=vctx.negative_conf,
+                )
+            return ItemDecision(
+                base_classification,
+                "direct_violation",
+                positive_conf=vctx.positive_conf,
+                negative_conf=vctx.negative_conf,
+            )
 
         cached = self.cache.get(person.person_id, item)
         if cached is not None:
             final_cls, reason = self._classification_from_verdict(cached.verdict, source="cache")
-            return ItemDecision(final_cls, reason)
+            return ItemDecision(
+                final_cls,
+                reason,
+                positive_conf=vctx.positive_conf,
+                negative_conf=vctx.negative_conf,
+            )
 
         verify_result = self.verifier.verify(item_crop, item, context=vctx)
         self.verifier_calls.append(time.time())
@@ -405,7 +496,12 @@ class MonitoringPipeline:
             verify_result.verdict,
             source=verify_result.source,
         )
-        return ItemDecision(final_cls, reason)
+        return ItemDecision(
+            final_cls,
+            reason,
+            positive_conf=vctx.positive_conf,
+            negative_conf=vctx.negative_conf,
+        )
 
     def _build_active_alerts(self) -> List[AlertPayload]:
         alerts: List[AlertPayload] = []

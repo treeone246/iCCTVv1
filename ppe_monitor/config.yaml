@@ -139,6 +139,23 @@ status_stability:
       violation_enter_frames: 7
       indeterminate_enter_frames: 12
 
+compliance_memory:
+  # Prior bias: workers are usually compliant, avoid flipping on noisy low-confidence detections.
+  assume_compliant: true
+  prior_compliant_score: 5.0
+  decay: 0.96
+  positive_gain: 1.0
+  negative_gain: 1.25
+  compliant_bonus: 1.0
+  violation_penalty: 1.2
+  indeterminate_decay: 0.985
+  ok_threshold: 4.0
+  bad_threshold: -4.0
+  # Non-compliance gate: negative evidence must dominate positive evidence.
+  dominance_ratio: 1.15
+  dominance_min_negative: 2.5
+  max_abs_score: 20.0
+
 required_ppe:
   - helmet
   - goggles
