@@ -11,7 +11,13 @@ from ultralytics import YOLO
 
 from .pose_tracker import MockPoseTracker, PoseTrackerBase, YOLOPoseTracker
 from .ppe_detector import MockPPEDetector, PPEDetectorBase, YOLOPPEDetector
-from .verifier import MockVerifier, VerifierBase, YOLOEVerifier
+from .verifier import (
+    HybridVerifier,
+    MockVerifier,
+    OllamaVLMClient,
+    VerifierBase,
+    YOLOEVerifier,
+)
 
 try:
     import onnxruntime as ort
@@ -240,11 +246,39 @@ def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponen
     if loaded_models["verifier"] is None:
         verifier = MockVerifier()
     else:
-        verifier = YOLOEVerifier(
+        yoloe_verifier = YOLOEVerifier(
             model=loaded_models["verifier"],
             conf_threshold=float(infer_cfg["conf_threshold_verifier"]),
             imgsz=imgsz,
         )
+        verifier_cfg = config.get("verifier", {})
+        backend = str(verifier_cfg.get("backend", "yoloe")).lower()
+        if backend == "ollama_hybrid":
+            ollama_cfg = verifier_cfg.get("ollama", {})
+            ollama_client = OllamaVLMClient(
+                host=str(ollama_cfg.get("host", "http://127.0.0.1:11434")),
+                model=str(ollama_cfg.get("model", "qwen2.5vl:3b")),
+                timeout_seconds=float(ollama_cfg.get("timeout_seconds", 8.0)),
+                temperature=float(ollama_cfg.get("temperature", 0.0)),
+            )
+            conflict_cfg = verifier_cfg.get("conflict_resolver", {})
+            verifier = HybridVerifier(
+                yoloe=yoloe_verifier,
+                ollama=ollama_client,
+                labels=dict(verifier_cfg.get("vlm_labels", {})),
+                ambiguity_margin=float(conflict_cfg.get("ambiguity_margin", 0.12)),
+                low_conf_threshold=float(conflict_cfg.get("low_conf_threshold", 0.40)),
+                enable_vlm=bool(verifier_cfg.get("enable_vlm", True)),
+            )
+            log_event(
+                "verifier_backend_selected",
+                backend="ollama_hybrid",
+                model=str(ollama_cfg.get("model", "qwen2.5vl:3b")),
+                host=str(ollama_cfg.get("host", "http://127.0.0.1:11434")),
+            )
+        else:
+            verifier = yoloe_verifier
+            log_event("verifier_backend_selected", backend="yoloe")
 
     return RuntimeComponents(
         pose_tracker=pose_tracker,

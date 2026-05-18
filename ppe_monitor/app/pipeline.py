@@ -10,7 +10,13 @@ from typing import Deque, Dict, List, Tuple
 import cv2
 import numpy as np
 
-from .association import AssociationEngine, iou as box_iou
+from .association import (
+    AssociationEngine,
+    bbox_center,
+    distance as point_distance,
+    iou as box_iou,
+    torso_bbox,
+)
 from .cache import VerifierCache
 from .pose_tracker import PoseTrackerBase, TrackedPerson
 from .ppe_detector import PPEDetection, PPEDetectorBase, build_alias_index, canonicalize_label
@@ -26,7 +32,7 @@ from .schemas import (
     VerifierVerdict,
 )
 from .state_machine import PersonComplianceState
-from .verifier import VerifierBase
+from .verifier import VerifierBase, VerifierContext
 
 
 @dataclass
@@ -71,6 +77,7 @@ class MonitoringPipeline:
         cache_cfg = config["verifier_cache"]
         self.ttl_compliant = float(cache_cfg["ttl_compliant_seconds"])
         self.ttl_violation = float(cache_cfg["ttl_violation_seconds"])
+        self.ttl_indeterminate = float(cache_cfg.get("ttl_indeterminate_seconds", 1.5))
 
         assoc_cfg = config["association"]
         roi_cfg = config.get("verifier_roi", {})
@@ -104,6 +111,26 @@ class MonitoringPipeline:
         self.ensemble_yoloe_conf = float(ens_cfg.get("yoloe_conf_threshold", config["inference"]["conf_threshold_verifier"]))
         self.ensemble_iou_nms = float(ens_cfg.get("iou_nms_threshold", 0.5))
         self.ensemble_allow_from_verifier = set(str(x) for x in ens_cfg.get("allowed_items", self.required_ppe))
+
+        verifier_cfg = config.get("verifier", {})
+        conflict_cfg = verifier_cfg.get("conflict_resolver", {})
+        self.conflict_min_iou = float(conflict_cfg.get("min_iou", 0.05))
+        self.conflict_ambiguity_margin = float(conflict_cfg.get("ambiguity_margin", 0.12))
+        self.conflict_low_conf = float(conflict_cfg.get("low_conf_threshold", 0.40))
+        self.vlm_label_polarity: Dict[str, Dict[str, List[str]]] = {
+            "helmet": {"positive": ["helmet"], "negative": []},
+            "goggles": {"positive": ["goggles"], "negative": []},
+            "gloves": {"positive": ["gloves"], "negative": ["no_gloves"]},
+            "boots": {"positive": ["boots"], "negative": ["no_boots"]},
+            "coverall": {"positive": ["coverall"], "negative": []},
+        }
+        config_polarity = verifier_cfg.get("label_polarity", {})
+        for item, spec in config_polarity.items():
+            if item not in self.vlm_label_polarity:
+                continue
+            pos = [str(x) for x in spec.get("positive", self.vlm_label_polarity[item]["positive"])]
+            neg = [str(x) for x in spec.get("negative", self.vlm_label_polarity[item]["negative"])]
+            self.vlm_label_polarity[item] = {"positive": pos, "negative": neg}
 
         dash_cfg = config["dashboard"]
         self.jpeg_quality = int(dash_cfg["jpeg_quality"])
@@ -237,7 +264,12 @@ class MonitoringPipeline:
             frame_shape=frame.shape,
         )
 
-        if base_classification != Classification.VIOLATION_TENTATIVE:
+        person_crop = self._crop_to_bbox(frame, person.bbox)
+        item_crop = self._crop_for_item(frame, person, item)
+        vctx, ambiguous = self._build_verifier_context(person, item, ppe_detections, person_crop, item_crop)
+        needs_verifier = base_classification == Classification.VIOLATION_TENTATIVE or ambiguous
+
+        if not needs_verifier:
             if base_classification == Classification.COMPLIANT:
                 return ItemDecision(base_classification, "detected_and_spatially_bound")
             if base_classification == Classification.INDETERMINATE:
@@ -248,33 +280,21 @@ class MonitoringPipeline:
 
         cached = self.cache.get(person.person_id, item)
         if cached is not None:
-            final_cls = (
-                Classification.COMPLIANT
-                if cached.verdict == VerifierVerdict.COMPLIANT
-                else Classification.VIOLATION
-            )
-            reason = (
-                "verifier_cache_compliant"
-                if cached.verdict == VerifierVerdict.COMPLIANT
-                else "verifier_cache_violation"
-            )
+            final_cls, reason = self._classification_from_verdict(cached.verdict, source="cache")
             return ItemDecision(final_cls, reason)
 
-        crop = self._crop_for_item(frame, person, item)
-        verify_result = self.verifier.verify(crop, item)
+        verify_result = self.verifier.verify(item_crop, item, context=vctx)
         self.verifier_calls.append(time.time())
-        ttl = self.ttl_compliant if verify_result.verdict == VerifierVerdict.COMPLIANT else self.ttl_violation
+        if verify_result.verdict == VerifierVerdict.COMPLIANT:
+            ttl = self.ttl_compliant
+        elif verify_result.verdict == VerifierVerdict.VIOLATION:
+            ttl = self.ttl_violation
+        else:
+            ttl = self.ttl_indeterminate
         self.cache.put(person.person_id, item, verify_result, ttl)
-
-        final_cls = (
-            Classification.COMPLIANT
-            if verify_result.verdict == VerifierVerdict.COMPLIANT
-            else Classification.VIOLATION
-        )
-        reason = (
-            f"verifier_{verify_result.source}_compliant"
-            if verify_result.verdict == VerifierVerdict.COMPLIANT
-            else f"verifier_{verify_result.source}_violation"
+        final_cls, reason = self._classification_from_verdict(
+            verify_result.verdict,
+            source=verify_result.source,
         )
         return ItemDecision(final_cls, reason)
 
@@ -408,6 +428,98 @@ class MonitoringPipeline:
         if constrained[2] <= constrained[0] or constrained[3] <= constrained[1]:
             return self._crop_to_bbox(frame, person.bbox)
         return self._crop_to_bbox(frame, constrained)
+
+    def _classification_from_verdict(self, verdict: VerifierVerdict, source: str) -> tuple[Classification, str]:
+        if verdict == VerifierVerdict.COMPLIANT:
+            return Classification.COMPLIANT, f"verifier_{source}_compliant"
+        if verdict == VerifierVerdict.VIOLATION:
+            return Classification.VIOLATION, f"verifier_{source}_violation"
+        return Classification.INDETERMINATE, f"verifier_{source}_indeterminate"
+
+    def _build_verifier_context(
+        self,
+        person: TrackedPerson,
+        item: str,
+        detections: List[PPEDetection],
+        person_crop: np.ndarray,
+        item_crop: np.ndarray,
+    ) -> tuple[VerifierContext, bool]:
+        polarity = self.vlm_label_polarity.get(item, {"positive": [item], "negative": []})
+        positive_labels = set(polarity.get("positive", [item]))
+        negative_labels = set(polarity.get("negative", []))
+
+        person_box = person.bbox
+        positive_conf = 0.0
+        negative_conf = 0.0
+        any_overlap = False
+
+        for det in detections:
+            if box_iou(det.bbox, person_box) < self.conflict_min_iou:
+                continue
+            if not self._detection_matches_item_region(person, item, det.bbox):
+                continue
+            if det.label in positive_labels:
+                positive_conf = max(positive_conf, float(det.conf))
+                any_overlap = True
+            elif det.label in negative_labels:
+                negative_conf = max(negative_conf, float(det.conf))
+                any_overlap = True
+
+        ambiguous = False
+        if any_overlap and negative_labels:
+            if negative_conf > 0.0:
+                if abs(positive_conf - negative_conf) <= self.conflict_ambiguity_margin:
+                    ambiguous = True
+                if positive_conf < self.conflict_low_conf:
+                    ambiguous = True
+                if negative_conf > positive_conf:
+                    ambiguous = True
+
+        return (
+            VerifierContext(
+                person_crop=person_crop,
+                item_crop=item_crop,
+                positive_conf=positive_conf,
+                negative_conf=negative_conf,
+                expected_item=item,
+            ),
+            ambiguous,
+        )
+
+    def _detection_matches_item_region(
+        self,
+        person: TrackedPerson,
+        item: str,
+        det_bbox: tuple[float, float, float, float],
+    ) -> bool:
+        rule = self.association.rules.get(item)
+        if rule is None:
+            return False
+
+        if item == "coverall":
+            torso = torso_bbox(
+                person.keypoints,
+                person.keypoint_confidences,
+                self.association.keypoint_conf_floor,
+            )
+            if torso is None:
+                return False
+            return box_iou(det_bbox, torso) >= max(0.02, rule.iou_threshold * 0.5)
+
+        center = bbox_center(det_bbox)
+        points: List[tuple[float, float]] = []
+        for name in rule.expected_keypoints:
+            conf = float(person.keypoint_confidences.get(name, 0.0))
+            point = person.keypoints.get(name)
+            if point is None or conf < rule.keypoint_conf_floor:
+                continue
+            points.append((float(point[0]), float(point[1])))
+        if not points:
+            return False
+
+        min_dist = min(point_distance(center, p) for p in points)
+        limit = max(24.0, float(rule.distance_threshold_px) * 1.35)
+        return min_dist <= limit
 
     def _detect_ppe(self, frame: np.ndarray) -> List[PPEDetection]:
         """Run primary detector and optional YOLOE ensemble detector."""

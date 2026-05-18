@@ -63,6 +63,25 @@ All thresholds and behavior are in `config.yaml`.
 - `dashboard.jpeg_quality`: JPEG quality used for stream frames
 - `dashboard.metrics_window_minutes`: time window used for dashboard aggregate metrics
 
+### Ollama VLM Verifier (Qwen2.5-VL 3B)
+
+The verifier can run in hybrid mode:
+
+- YOLOE verifier model stays the fast path.
+- Ollama VLM is called only on ambiguous positive-vs-negative detections
+  (for example `boots` vs `no_boots`, `gloves` vs `no_gloves`).
+
+Config keys:
+
+- `verifier.backend: ollama_hybrid`
+- `verifier.ollama.host` (default `http://127.0.0.1:11434`)
+- `verifier.ollama.model` (default `qwen2.5vl:3b`)
+- `verifier.conflict_resolver.*` for ambiguity thresholds
+- `verifier.label_polarity.*` maps positive/negative detector classes per item
+
+The pipeline converts uncertain VLM answers to `INDETERMINATE`, which reduces
+dashboard alert spam by design due to state-machine hysteresis.
+
 ## ONNX Caveats
 
 - TensorRT export is the next optimization step once ONNX flow is stable.

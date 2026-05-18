@@ -35,6 +35,7 @@ class VerifierVerdict(str, Enum):
 
     COMPLIANT = "COMPLIANT"
     VIOLATION = "VIOLATION"
+    INDETERMINATE = "INDETERMINATE"
 
 
 class VerifierResult(BaseModel):

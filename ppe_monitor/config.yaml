@@ -6,15 +6,18 @@ video:
 models:
   pose: models/yolo26n-pose.onnx
   ppe: models/best.onnx
-  verifier: models/yoloe-ppe.pt
+  verifier: models/yoloe-ppeRev2.onnx
   allow_mock_models: true
 
 ppe_label_aliases:
   helmet: [helmet, hardhat, hard_hat, helmet_hardhat, helmet/hardhat, hard hat]
-  goggles: [goggles, safety_glasses, safety glasses, glasses, goggles/glasses, safety glasses protective eyewear]
+  goggles: [goggles, safety_glasses, safety glasses, glasses, goggles/glasses, safety glasses protective eyewear, safety glasses or goggles protective eyewear]
   gloves: [gloves, glove, hand_gloves, hand_glove, work glove safety glove, work_glove_safety_glove]
   boots: [boots, boot, safety_boots, safety shoes, safety_shoes, shoes, boots/shoes, safety boot work boot, safety_boot_work_boot]
   coverall: [coverall, coveralls, overall, overalls, industrial coverall jumpsuit, industrial_coverall_jumpsuit]
+  no_gloves: [hands not using gloves, hands_not_using_gloves, no_gloves]
+  no_boots: [socks not wearing safety boots, socks_not_wearing_safety_boots, no_boots]
+  harness: [safety harness used on person, safety_harness_used_on_person, harness]
 
 inference:
   device: auto
@@ -28,7 +31,54 @@ detector_ensemble:
   enabled: true
   yoloe_conf_threshold: 0.20
   iou_nms_threshold: 0.50
-  allowed_items: [helmet, goggles, gloves, boots, coverall]
+  allowed_items: [helmet, goggles, gloves, boots, coverall, no_gloves, no_boots, harness]
+
+verifier:
+  backend: ollama_hybrid
+  enable_vlm: true
+  ollama:
+    host: "http://127.0.0.1:11434"
+    model: "qwen2.5vl:3b"
+    timeout_seconds: 8.0
+    temperature: 0.0
+  conflict_resolver:
+    min_iou: 0.05
+    ambiguity_margin: 0.12
+    low_conf_threshold: 0.40
+  # Controls when positive/negative detector classes should escalate to VLM.
+  label_polarity:
+    helmet:
+      positive: [helmet]
+      negative: []
+    goggles:
+      positive: [goggles]
+      negative: []
+    gloves:
+      positive: [gloves]
+      negative: [no_gloves]
+    boots:
+      positive: [boots]
+      negative: [no_boots]
+    coverall:
+      positive: [coverall]
+      negative: []
+  # Human-readable class names used in the VLM prompt.
+  vlm_labels:
+    helmet:
+      positive: "hard hat"
+      negative: "not wearing hard hat"
+    goggles:
+      positive: "safety glasses or goggles protective eyewear"
+      negative: "not wearing safety glasses or goggles"
+    gloves:
+      positive: "work glove safety glove"
+      negative: "hands not using gloves"
+    boots:
+      positive: "safety boot work boot"
+      negative: "socks not wearing safety boots"
+    coverall:
+      positive: "industrial coverall jumpsuit"
+      negative: "not wearing coverall"
 
 association:
   keypoint_conf_floor: 0.40
@@ -48,6 +98,7 @@ association:
 verifier_cache:
   ttl_compliant_seconds: 8
   ttl_violation_seconds: 3
+  ttl_indeterminate_seconds: 1.5
 
 verifier_roi:
   keypoint_conf_floor: 0.40
