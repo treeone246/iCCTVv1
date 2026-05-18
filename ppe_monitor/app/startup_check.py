@@ -47,6 +47,20 @@ def _resolve_model_path(project_root: Path, configured_path: str) -> Path:
     return (project_root / path).resolve()
 
 
+def _resolve_enforced_ppe_model(project_root: Path, configured_path: str) -> tuple[Path, bool]:
+    """Force PPE model to best2.onnx/.engine for consistent runtime behavior."""
+    configured = _resolve_model_path(project_root, configured_path)
+    name = configured.name.lower()
+    if name in {"best2.onnx", "best2.engine"}:
+        return configured, False
+
+    preferred_engine = (project_root / "models" / "best2.engine").resolve()
+    preferred_onnx = (project_root / "models" / "best2.onnx").resolve()
+    if preferred_engine.exists():
+        return preferred_engine, True
+    return preferred_onnx, True
+
+
 def _provider_preference(device: str) -> List[str]:
     if device == "cpu":
         return ["CPUExecutionProvider"]
@@ -158,7 +172,17 @@ def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponen
     loaded_models: Dict[str, Optional[YOLO]] = {"pose": None, "ppe": None, "verifier": None}
 
     for key, configured_path, task in specs:
-        model_path = _resolve_model_path(project_root, configured_path)
+        if key == "ppe":
+            model_path, forced = _resolve_enforced_ppe_model(project_root, configured_path)
+            if forced:
+                log_event(
+                    "ppe_model_forced_best2",
+                    configured_path=str(configured_path),
+                    selected_path=model_path.as_posix(),
+                    task="detect",
+                )
+        else:
+            model_path = _resolve_model_path(project_root, configured_path)
         model_exists = model_path.exists()
 
         if not model_exists:
