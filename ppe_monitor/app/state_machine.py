@@ -17,6 +17,10 @@ class ItemState:
     last_transition_ts: float = 0.0
     evidence_jpeg: Optional[bytes] = None
     compliant_streak: int = 0
+    candidate_since_ts: Optional[float] = None
+    confirmed_since_ts: Optional[float] = None
+    last_alert_sent_ts: Optional[float] = None
+    violation_stage: str = "CLEAR"
 
 
 @dataclass
@@ -36,13 +40,17 @@ class PersonComplianceState:
 
     def __init__(
         self,
-        window_size: int = 8,
-        violation_threshold: int = 5,
-        clear_threshold: int = 3,
+        window_size: int = 30,
+        violation_threshold: int = 20,
+        clear_threshold: int = 1,
+        confirm_seconds: float = 2.0,
+        cooldown_seconds: float = 60.0,
     ) -> None:
         self.window_size = window_size
         self.violation_threshold = violation_threshold
         self.clear_threshold = clear_threshold
+        self.confirm_seconds = confirm_seconds
+        self.cooldown_seconds = cooldown_seconds
         self._state: Dict[int, Dict[str, ItemState]] = {}
 
     def _ensure_item_state(self, person_id: int, item: str) -> ItemState:
@@ -70,6 +78,9 @@ class PersonComplianceState:
                     active.append((person_id, item, item_state))
         return active
 
+    def get_violation_stage(self, person_id: int, item: str) -> str:
+        return self._ensure_item_state(person_id, item).violation_stage
+
     def update(
         self,
         person_id: int,
@@ -80,45 +91,70 @@ class PersonComplianceState:
     ) -> Optional[StateChange]:
         state = self._ensure_item_state(person_id, item)
         ts = event_ts if event_ts is not None else time()
+        violation_like = {Classification.VIOLATION, Classification.VIOLATION_TENTATIVE}
 
-        if classification != Classification.INDETERMINATE:
-            state.recent.append(classification)
+        state.recent.append(classification)
 
         if classification == Classification.COMPLIANT:
             state.compliant_streak += 1
-        elif classification in (Classification.VIOLATION, Classification.VIOLATION_TENTATIVE):
+        elif classification in violation_like:
+            state.compliant_streak = 0
+        else:
             state.compliant_streak = 0
 
-        if (
-            state.alert_status != AlertStatus.ACTIVE
-            and len(state.recent) >= self.window_size
-            and sum(1 for c in state.recent if c == Classification.VIOLATION) >= self.violation_threshold
-        ):
-            state.alert_status = AlertStatus.ACTIVE
-            state.last_transition_ts = ts
-            state.evidence_jpeg = frame_jpeg
-            return StateChange(
-                event_type="ALERT_RAISED",
-                person_id=person_id,
-                item=item,
-                alert_status=state.alert_status,
-                timestamp=ts,
-                evidence_jpeg=frame_jpeg,
-            )
+        # Compliance immediately refreshes/reset timers and clears active alerts.
+        if classification == Classification.COMPLIANT:
+            state.candidate_since_ts = None
+            state.confirmed_since_ts = None
+            state.violation_stage = "CLEAR"
+            if state.alert_status == AlertStatus.ACTIVE and state.compliant_streak >= self.clear_threshold:
+                state.alert_status = AlertStatus.CLEARED
+                state.last_transition_ts = ts
+                return StateChange(
+                    event_type="ALERT_CLEARED",
+                    person_id=person_id,
+                    item=item,
+                    alert_status=state.alert_status,
+                    timestamp=ts,
+                    evidence_jpeg=None,
+                )
+            return None
 
-        if (
-            state.alert_status == AlertStatus.ACTIVE
-            and state.compliant_streak >= self.clear_threshold
-        ):
-            state.alert_status = AlertStatus.CLEARED
-            state.last_transition_ts = ts
-            return StateChange(
-                event_type="ALERT_CLEARED",
-                person_id=person_id,
-                item=item,
-                alert_status=state.alert_status,
-                timestamp=ts,
-                evidence_jpeg=None,
-            )
+        violation_votes = sum(1 for c in state.recent if c in violation_like)
+        if violation_votes >= self.violation_threshold:
+            if state.candidate_since_ts is None:
+                state.candidate_since_ts = ts
+            state.violation_stage = "VIOLATION_CANDIDATE"
+
+            if (ts - state.candidate_since_ts) >= self.confirm_seconds:
+                state.confirmed_since_ts = state.confirmed_since_ts or ts
+                state.violation_stage = "VIOLATION_CONFIRMED"
+                if state.alert_status != AlertStatus.ACTIVE:
+                    state.alert_status = AlertStatus.ACTIVE
+                    state.last_transition_ts = ts
+                    state.evidence_jpeg = frame_jpeg
+
+                can_send = (
+                    state.last_alert_sent_ts is None
+                    or (ts - state.last_alert_sent_ts) >= self.cooldown_seconds
+                )
+                if can_send:
+                    state.last_alert_sent_ts = ts
+                    state.last_transition_ts = ts
+                    state.evidence_jpeg = frame_jpeg
+                    return StateChange(
+                        event_type="ALERT_RAISED",
+                        person_id=person_id,
+                        item=item,
+                        alert_status=state.alert_status,
+                        timestamp=ts,
+                        evidence_jpeg=frame_jpeg,
+                    )
+        else:
+            # Not enough recent violation votes: keep clear unless still confirmed.
+            if state.alert_status != AlertStatus.ACTIVE:
+                state.violation_stage = "CLEAR"
+                state.candidate_since_ts = None
+                state.confirmed_since_ts = None
 
         return None

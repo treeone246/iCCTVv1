@@ -79,9 +79,11 @@ class MonitoringPipeline:
         self.cache = VerifierCache()
         sm_cfg = config["state_machine"]
         self.state_machine = PersonComplianceState(
-            window_size=int(sm_cfg["window_size"]),
-            violation_threshold=int(sm_cfg["violation_threshold"]),
-            clear_threshold=int(sm_cfg["clear_threshold"]),
+            window_size=int(sm_cfg.get("window_size", sm_cfg.get("vote_window_frames", 30))),
+            violation_threshold=int(sm_cfg.get("violation_threshold", sm_cfg.get("candidate_violation_frames", 20))),
+            clear_threshold=int(sm_cfg.get("clear_threshold", sm_cfg.get("compliant_clear_frames", 1))),
+            confirm_seconds=float(sm_cfg.get("confirm_seconds", sm_cfg.get("confirm_stable_seconds", 2.0))),
+            cooldown_seconds=float(sm_cfg.get("cooldown_seconds", sm_cfg.get("alert_cooldown_seconds", 60.0))),
         )
 
         cache_cfg = config["verifier_cache"]
@@ -193,6 +195,9 @@ class MonitoringPipeline:
                     per_item_reason[item] = f"stabilized_hold_{item_state_raw.value.lower()}"
                 else:
                     per_item_reason[item] = decision.reason
+                stage = self.state_machine.get_violation_stage(person.person_id, item)
+                if stage in {"VIOLATION_CANDIDATE", "VIOLATION_CONFIRMED"}:
+                    per_item_reason[item] = stage.lower()
                 self.last_item_reason[(person.person_id, item)] = decision.reason
 
                 if item_state_raw in (Classification.COMPLIANT, Classification.VIOLATION):

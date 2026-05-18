@@ -113,9 +113,17 @@ verifier_roi:
     coverall: 1.25
 
 state_machine:
-  window_size: 8
-  violation_threshold: 5
-  clear_threshold: 3
+  # Vote-based anti-spam policy:
+  # - keep last 30 frame votes
+  # - >=20 violation-like votes => candidate
+  # - candidate stable 2s => confirmed
+  # - alert is sent once, then 60s cooldown before another send
+  # - any compliant frame refreshes/reset timers for this item
+  window_size: 30
+  violation_threshold: 20
+  clear_threshold: 1
+  confirm_seconds: 2.0
+  cooldown_seconds: 60.0
 
 status_stability:
   # Display-state smoothing (live window + web UI) to reduce flicker/spam.

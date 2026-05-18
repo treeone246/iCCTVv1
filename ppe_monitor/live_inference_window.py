@@ -33,6 +33,8 @@ REASON_LEGEND = {
     "verifier_cache_violation": "Violation from verifier cache",
     "verifier_yoloe_compliant": "Compliant by YOLOE verifier",
     "verifier_yoloe_violation": "Violation by YOLOE verifier",
+    "violation_candidate": "Timer stage: candidate (vote threshold reached)",
+    "violation_confirmed": "Timer stage: confirmed (stable duration reached)",
 }
 
 
