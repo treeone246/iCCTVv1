@@ -15,7 +15,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model",
         type=str,
-        default="yoloe-ppe.pt",
+        default="yoloe-ppeRev2.pt",
         help="Path to .pt model (default: yoloe-ppe.pt in alternatif folder).",
     )
     parser.add_argument(
