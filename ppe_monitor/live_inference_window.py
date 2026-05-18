@@ -214,8 +214,8 @@ def _status_color_bgr(state: str) -> tuple[int, int, int]:
 
 
 def render_status_dashboard(payload: Any) -> np.ndarray:
-    width = 520
-    row_h = 32
+    width = 640
+    row_h = 64
     item_col_w = 80
     items = ["helmet", "gloves", "coverall", "boots", "goggles"]
     people = list(payload.persons)
