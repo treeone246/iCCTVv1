@@ -238,7 +238,10 @@ def render_status_dashboard(payload: Any) -> np.ndarray:
     )
 
     m = payload.metrics
-    model_line = f"PPE model: {Path(getattr(m, 'ppe_model', '')).name or 'unknown'} ({getattr(m, 'ppe_task', 'detect')})"
+    model_line = (
+        f"PPE model: {Path(getattr(m, 'ppe_model', '')).name or 'unknown'} "
+        f"({getattr(m, 'ppe_task', 'detect')}, fusion={getattr(m, 'ppe_fusion_mode', 'nms')})"
+    )
     infer_line = (
         f"infer calls: BEST2={getattr(m, 'ppe_infer_calls', 0)} "
         f"YOLOEaux={getattr(m, 'verifier_aux_infer_calls', 0)}"

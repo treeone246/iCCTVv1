@@ -108,6 +108,7 @@ class MetricsPayload(BaseModel):
     verifier_aux_infer_calls: int = 0
     ppe_model: str = ""
     ppe_task: str = ""
+    ppe_fusion_mode: str = "nms"
 
 
 class FramePayload(BaseModel):

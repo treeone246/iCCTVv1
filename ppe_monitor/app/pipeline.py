@@ -121,6 +121,7 @@ class MonitoringPipeline:
         self.ensemble_yoloe_conf = float(ens_cfg.get("yoloe_conf_threshold", config["inference"]["conf_threshold_verifier"]))
         self.ensemble_iou_nms = float(ens_cfg.get("iou_nms_threshold", 0.5))
         self.ensemble_allow_from_verifier = set(str(x) for x in ens_cfg.get("allowed_items", self.required_ppe))
+        self.ppe_fusion_mode = str(ens_cfg.get("fusion_mode", "nms")).lower()
 
         verifier_cfg = config.get("verifier", {})
         conflict_cfg = verifier_cfg.get("conflict_resolver", {})
@@ -461,6 +462,7 @@ class MonitoringPipeline:
             verifier_aux_infer_calls=self._verifier_aux_infer_calls,
             ppe_model=self._ppe_model_path,
             ppe_task=self._ppe_task,
+            ppe_fusion_mode=self.ppe_fusion_mode,
         )
 
     def _overall_status(self, per_item_state: Dict[str, Classification]) -> OverallStatus:
@@ -632,7 +634,7 @@ class MonitoringPipeline:
         return min_dist <= limit
 
     def _detect_ppe(self, frame: np.ndarray) -> List[PPEDetection]:
-        """Run primary detector and optional YOLOE ensemble detector."""
+        """Run primary detector and optional YOLOE auxiliary model."""
         self._ppe_infer_calls += 1
         primary = self.ppe_detector.detect(frame)
         if not self.ensemble_enabled:
@@ -652,7 +654,10 @@ class MonitoringPipeline:
                 "ppe_merged": 0,
             }
             return combined
-        merged = self._nms_merge_detections(combined, iou_threshold=self.ensemble_iou_nms)
+        if self.ppe_fusion_mode == "parallel":
+            merged = combined
+        else:
+            merged = self._nms_merge_detections(combined, iou_threshold=self.ensemble_iou_nms)
         self._last_detector_counts = {
             "ppe_primary_raw": len(primary),
             "verifier_aux_raw": len(yoloe),

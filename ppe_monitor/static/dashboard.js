@@ -190,7 +190,7 @@ function renderPPEStatusDashboard(persons, metrics) {
   const modelName = (metrics.ppe_model || "").split("/").pop() || "unknown";
   runtimeCard.innerHTML = `
     <div class="ppe-status-title">MODEL RUNTIME</div>
-    <div class="ppe-status-stats">${modelName} (${metrics.ppe_task || "detect"})</div>
+    <div class="ppe-status-stats">${modelName} (${metrics.ppe_task || "detect"}, fusion:${metrics.ppe_fusion_mode || "nms"})</div>
     <div class="ppe-status-stats">raw/frame BEST2:${metrics.ppe_primary_raw ?? 0} YOLOE:${metrics.verifier_aux_raw ?? 0} merged:${metrics.ppe_merged ?? 0}</div>
     <div class="ppe-status-stats">infer calls BEST2:${metrics.ppe_infer_calls ?? 0} YOLOE:${metrics.verifier_aux_infer_calls ?? 0}</div>
   `;

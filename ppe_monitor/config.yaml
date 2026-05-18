@@ -30,6 +30,7 @@ inference:
 
 detector_ensemble:
   enabled: true
+  fusion_mode: parallel
   yoloe_conf_threshold: 0.20
   iou_nms_threshold: 0.50
   allowed_items: [helmet, goggles, gloves, boots, coverall, no_gloves, no_boots, harness]
