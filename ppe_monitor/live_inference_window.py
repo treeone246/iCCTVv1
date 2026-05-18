@@ -247,12 +247,33 @@ def render_status_dashboard(payload: Any) -> np.ndarray:
             item_counts[item][state] += 1
 
     for item in items:
+        
+
+
+
         compliant = item_counts[item]["COMPLIANT"]
         violation = item_counts[item]["VIOLATION"]
         indet = item_counts[item]["INDETERMINATE"]
-        text = f"{item:<9} ok:{compliant:>2}  bad:{violation:>30}  unk:{indet:>20}"
+
+        if compliant == True:
+            compliant = f"{compliant}"
+        else:
+            compliant = f"{compliant}"
+        if violation == True:            
+            violation = f"{violation}"        
+        else:
+            violation = f"{violation}"
+        if indet == True:
+            indet = f"{indet}"        
+        else:
+            indet = f"{indet}"
+
+
+        text = f"{item} ok:{compliant}  bad:{violation}  unk:{indet}"
         cv2.putText(canvas, text, (14, y), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (220, 220, 220), 1, cv2.LINE_AA)
         y += 20
+
+
 
     y += 8
     cv2.line(canvas, (12, y), (width - 12, y), (75, 75, 75), 1)
