@@ -43,6 +43,16 @@ class ItemDecision:
     reason: str
 
 
+@dataclass
+class StableStateTracker:
+    """Sticky per-item state to reduce dashboard flicker/spam."""
+
+    stable: Classification = Classification.INDETERMINATE
+    compliant_streak: int = 0
+    violation_streak: int = 0
+    indeterminate_streak: int = 0
+
+
 def log_event(event_type: str, frame_id: int, person_id: int, **fields: object) -> None:
     payload = {"event_type": event_type, "frame_id": frame_id, "person_id": person_id, **fields}
     print(json.dumps(payload, default=str))
@@ -141,6 +151,14 @@ class MonitoringPipeline:
         self.classification_history: Deque[Tuple[float, Classification]] = deque()
         self._last_frame_perf: float | None = None
         self._fps = 0.0
+        self._stable_states: Dict[Tuple[int, str], StableStateTracker] = {}
+
+        stability_cfg = config.get("status_stability", {})
+        self.stable_compliant_enter = int(stability_cfg.get("compliant_enter_frames", 2))
+        self.stable_compliant_clear_violation = int(stability_cfg.get("compliant_clear_violation_frames", 3))
+        self.stable_violation_enter = int(stability_cfg.get("violation_enter_frames", 4))
+        self.stable_indeterminate_enter = int(stability_cfg.get("indeterminate_enter_frames", 8))
+        self.stable_per_item = dict(stability_cfg.get("per_item", {}))
 
     def increment_dropped_frames(self, count: int) -> None:
         if count > 0:
@@ -149,26 +167,33 @@ class MonitoringPipeline:
     def process_frame(self, frame: np.ndarray, frame_id: int) -> tuple[FramePayload, bytes]:
         frame_jpeg = self._encode_frame(frame)
         tracked_people = self.pose_tracker.track(frame)
+        self._prune_stability_state(tracked_people)
         ppe_detections = self._detect_ppe(frame)
 
         person_payloads: List[PersonPayload] = []
         for person in tracked_people:
             per_item_state: Dict[str, Classification] = {}
+            per_item_state_raw: Dict[str, Classification] = {}
             per_item_reason: Dict[str, str] = {}
             for item in self.required_ppe:
                 decision = self._classify_person_item_with_reason(person, ppe_detections, item, frame)
-                item_state = decision.classification
+                item_state_raw = decision.classification
+                per_item_state_raw[item] = item_state_raw
+                item_state = self._stabilize_display_state(person.person_id, item, item_state_raw)
                 per_item_state[item] = item_state
-                per_item_reason[item] = decision.reason
+                if item_state != item_state_raw:
+                    per_item_reason[item] = f"stabilized_hold_{item_state_raw.value.lower()}"
+                else:
+                    per_item_reason[item] = decision.reason
                 self.last_item_reason[(person.person_id, item)] = decision.reason
 
-                if item_state in (Classification.COMPLIANT, Classification.VIOLATION):
-                    self.classification_history.append((time.time(), item_state))
+                if item_state_raw in (Classification.COMPLIANT, Classification.VIOLATION):
+                    self.classification_history.append((time.time(), item_state_raw))
 
                 change = self.state_machine.update(
                     person_id=person.person_id,
                     item=item,
-                    classification=item_state,
+                    classification=item_state_raw,
                     frame_jpeg=frame_jpeg,
                 )
                 if change is not None:
@@ -234,6 +259,77 @@ class MonitoringPipeline:
             metrics=metrics,
         )
         return payload, frame_jpeg
+
+    def _stabilize_display_state(
+        self,
+        person_id: int,
+        item: str,
+        raw_state: Classification,
+    ) -> Classification:
+        key = (person_id, item)
+        tracker = self._stable_states.get(key)
+        if tracker is None:
+            tracker = StableStateTracker(stable=raw_state)
+            self._stable_states[key] = tracker
+            return raw_state
+
+        if raw_state == Classification.COMPLIANT:
+            tracker.compliant_streak += 1
+            tracker.violation_streak = 0
+            tracker.indeterminate_streak = 0
+        elif raw_state == Classification.VIOLATION:
+            tracker.violation_streak += 1
+            tracker.compliant_streak = 0
+            tracker.indeterminate_streak = 0
+        else:
+            tracker.indeterminate_streak += 1
+            tracker.compliant_streak = 0
+            tracker.violation_streak = 0
+
+        stable = tracker.stable
+        violation_enter = self._stability_threshold(item, "violation_enter_frames", self.stable_violation_enter)
+        compliant_enter = self._stability_threshold(item, "compliant_enter_frames", self.stable_compliant_enter)
+        compliant_clear = self._stability_threshold(
+            item,
+            "compliant_clear_violation_frames",
+            self.stable_compliant_clear_violation,
+        )
+        indeterminate_enter = self._stability_threshold(
+            item,
+            "indeterminate_enter_frames",
+            self.stable_indeterminate_enter,
+        )
+        if stable == Classification.COMPLIANT:
+            if tracker.violation_streak >= violation_enter:
+                stable = Classification.VIOLATION
+            elif tracker.indeterminate_streak >= indeterminate_enter:
+                stable = Classification.INDETERMINATE
+        elif stable == Classification.VIOLATION:
+            if tracker.compliant_streak >= compliant_clear:
+                stable = Classification.COMPLIANT
+            elif tracker.indeterminate_streak >= indeterminate_enter:
+                stable = Classification.INDETERMINATE
+        else:
+            if tracker.compliant_streak >= compliant_enter:
+                stable = Classification.COMPLIANT
+            elif tracker.violation_streak >= violation_enter:
+                stable = Classification.VIOLATION
+
+        tracker.stable = stable
+        return stable
+
+    def _stability_threshold(self, item: str, key: str, default: int) -> int:
+        item_cfg = self.stable_per_item.get(item, {})
+        try:
+            return int(item_cfg.get(key, default))
+        except Exception:
+            return default
+
+    def _prune_stability_state(self, tracked_people: List[TrackedPerson]) -> None:
+        active_ids = {p.person_id for p in tracked_people}
+        stale_keys = [k for k in self._stable_states.keys() if k[0] not in active_ids]
+        for key in stale_keys:
+            self._stable_states.pop(key, None)
 
     def _classify_person_item(
         self,

@@ -3,7 +3,7 @@
 Real-time PPE compliance monitoring using a three-model ONNX cascade:
 
 - Pose + tracking: `models/yolo26n-pose.onnx`
-- PPE detection: `models/best.onnx`
+- PPE detection: `models/best2.onnx`
 - Verifier: `models/yoloe-ppe.onnx`
 
 The system uses tracked persons, keypoint-aware PPE association, verifier cache TTLs, and a per-item alert state machine with hysteresis.
@@ -20,7 +20,7 @@ For Jetson Orin Nano Super, use `requirements-jetson-orin-nano.txt`.
 Drop models into `models/`:
 
 - `models/yolo26n-pose.onnx`
-- `models/best.onnx`
+- `models/best2.onnx`
 - `models/yoloe-ppe.onnx`
 
 Run:
