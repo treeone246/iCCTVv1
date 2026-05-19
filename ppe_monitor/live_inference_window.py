@@ -41,6 +41,21 @@ MEMORY_STATE_COLOR = {
     PersonState.UNKNOWN.value: (128, 128, 128),                # gray
 }
 
+SKELETON_PAIRS = [
+    ("left_shoulder", "right_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("left_shoulder", "left_hip"),
+    ("right_shoulder", "right_hip"),
+    ("left_hip", "right_hip"),
+    ("left_hip", "left_knee"),
+    ("left_knee", "left_ankle"),
+    ("right_hip", "right_knee"),
+    ("right_knee", "right_ankle"),
+]
+
 REASON_LEGEND = {
     "detected_and_spatially_bound": "Detected and correctly worn",
     "keypoint_not_visible_or_out_of_frame": "Cannot assess (limb/keypoint not visible)",
@@ -68,9 +83,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--conf-ppe", type=float, default=-1.0, help="Override PPE confidence threshold.")
     parser.add_argument("--conf-verifier", type=float, default=-1.0, help="Override verifier confidence threshold.")
     parser.add_argument("--show-skeleton", action="store_true", help="Draw pose keypoints.")
+    parser.add_argument("--skeleton-conf", type=float, default=0.25, help="Keypoint confidence floor for drawing skeleton.")
     parser.add_argument("--show-reason-legend", action="store_true", help="Show reason code legend on screen.")
     parser.add_argument("--enable-memory", action="store_true", help="Enable per-track PPE compliance memory anti-spam.")
     parser.add_argument("--memory-window", type=int, default=30, help="Memory vote window frames.")
+    parser.add_argument("--memory-min-frames", type=int, default=15, help="Minimum valid votes before memory item decision.")
     parser.add_argument("--alert-cooldown", type=float, default=60.0, help="Cooldown seconds between repeated alerts.")
     parser.add_argument(
         "--events-jsonl",
@@ -125,6 +142,7 @@ def draw_overlay(
     frame: Any,
     payload: Any,
     show_skeleton: bool,
+    skeleton_conf: float,
     show_reason_legend: bool,
     legend_position: str,
     memory_state_by_person: dict[int, str] | None = None,
@@ -206,10 +224,25 @@ def draw_overlay(
                 line_y += 14
 
         if show_skeleton:
-            for kp in person.keypoints.values():
-                if kp.conf < 0.4:
+            for a, b in SKELETON_PAIRS:
+                pa = person.keypoints.get(a)
+                pb = person.keypoints.get(b)
+                if pa is None or pb is None:
                     continue
-                cv2.circle(out, (int(kp.x), int(kp.y)), 2, color, -1)
+                if float(pa.conf) < skeleton_conf or float(pb.conf) < skeleton_conf:
+                    continue
+                cv2.line(
+                    out,
+                    (int(pa.x), int(pa.y)),
+                    (int(pb.x), int(pb.y)),
+                    color,
+                    1,
+                    cv2.LINE_AA,
+                )
+            for kp in person.keypoints.values():
+                if float(kp.conf) < skeleton_conf:
+                    continue
+                cv2.circle(out, (int(kp.x), int(kp.y)), 3, color, -1)
 
     m = payload.metrics
     top = (
@@ -360,7 +393,7 @@ def render_status_dashboard(payload: Any) -> np.ndarray:
     return canvas
 
 
-def _item_visible_from_keypoints(person: Any, item: str, conf_floor: float = 0.4) -> bool:
+def _item_visible_from_keypoints(person: Any, item: str, conf_floor: float = 0.25) -> bool:
     keypoint_groups = {
         "helmet": ["nose", "left_eye", "right_eye"],
         "safety_glasses": ["left_eye", "right_eye"],
@@ -396,6 +429,7 @@ def apply_memory_layer(
     manager: PPEMemoryManager,
     events: ComplianceEventWriter | None,
     camera_id: str,
+    keypoint_conf_floor: float = 0.25,
 ) -> tuple[dict[int, str], dict[int, str]]:
     memory_state_by_person: dict[int, str] = {}
     memory_label_by_person: dict[int, str] = {}
@@ -411,7 +445,7 @@ def apply_memory_layer(
 
         # Use keypoint visibility to assign None when body part is not evaluable.
         for item in ["helmet", "coverall", "gloves", "safety_glasses", "boots"]:
-            if not _item_visible_from_keypoints(person, item):
+            if not _item_visible_from_keypoints(person, item, conf_floor=keypoint_conf_floor):
                 observations[item] = None
 
         # TODO: Production mode should always rely on real tracker IDs from ByteTrack/BoT-SORT/DeepStream nvtracker.
@@ -491,12 +525,14 @@ def run_image_mode(
                 manager=memory_manager,
                 events=event_writer,
                 camera_id="image_mode",
+                keypoint_conf_floor=float(args.skeleton_conf),
             )
 
         vis = draw_overlay(
             frame,
             payload,
             show_skeleton=args.show_skeleton,
+            skeleton_conf=float(args.skeleton_conf),
             show_reason_legend=args.show_reason_legend,
             legend_position=args.legend_position,
             memory_state_by_person=memory_state_by_person,
@@ -587,6 +623,7 @@ def main() -> None:
     if args.enable_memory:
         mem_cfg = PPEMemoryConfig(
             vote_window_frames=int(args.memory_window),
+            min_frames_for_decision=int(args.memory_min_frames),
             alert_cooldown_sec=float(args.alert_cooldown),
         )
         memory_manager = PPEMemoryManager(mem_cfg)
@@ -626,11 +663,13 @@ def main() -> None:
                     manager=memory_manager,
                     events=event_writer,
                     camera_id=str(args.source),
+                    keypoint_conf_floor=float(args.skeleton_conf),
                 )
             vis = draw_overlay(
                 frame,
                 payload,
                 show_skeleton=args.show_skeleton,
+                skeleton_conf=float(args.skeleton_conf),
                 show_reason_legend=args.show_reason_legend,
                 legend_position=args.legend_position,
                 memory_state_by_person=memory_state_by_person,
