@@ -9,6 +9,11 @@ const metricViolations = document.getElementById("metricViolations");
 const metricCompliance = document.getElementById("metricCompliance");
 const metricFps = document.getElementById("metricFps");
 const liveBadge = document.getElementById("liveBadge");
+const behaviorSummary = document.getElementById("behaviorSummary");
+const behaviorMeta = document.getElementById("behaviorMeta");
+const behaviorPatterns = document.getElementById("behaviorPatterns");
+const behaviorReview = document.getElementById("behaviorReview");
+const behaviorTraining = document.getElementById("behaviorTraining");
 
 const settingsBtn = document.getElementById("settingsBtn");
 const closeSettingsBtn = document.getElementById("closeSettingsBtn");
@@ -293,4 +298,87 @@ function updatePanels(payload) {
   }
 }
 
+function formatLocalTime(ts) {
+  if (!ts) {
+    return "N/A";
+  }
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) {
+    return String(ts);
+  }
+  return date.toLocaleString();
+}
+
+function renderBehaviorPanel(latest, memory) {
+  const model = latest?.model || "qwen3:4b";
+  const generatedAt = latest?.generated_at || "";
+  const summary = String(latest?.summary || "").trim();
+  behaviorSummary.textContent = summary || "No behavior summary available yet.";
+  behaviorMeta.textContent = `Model: ${model}\nGenerated: ${formatLocalTime(generatedAt)}`;
+
+  const patterns = Array.isArray(latest?.detected_patterns) ? latest.detected_patterns : [];
+  if (patterns.length === 0) {
+    behaviorPatterns.textContent = "None";
+  } else {
+    const text = patterns
+      .slice(0, 6)
+      .map((item) => {
+        const type = item?.type || "unknown";
+        const conf = item?.confidence != null ? ` (${Number(item.confidence).toFixed(2)})` : "";
+        const detail = item?.description || item?.evidence || "";
+        return `${type}${conf}${detail ? `: ${detail}` : ""}`;
+      })
+      .join("\n");
+    behaviorPatterns.textContent = text;
+  }
+
+  const reviewTracks = [];
+  for (const [trackId, entry] of Object.entries(memory || {})) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    if (entry.review_needed || entry.possible_identity_switch) {
+      reviewTracks.push(`Track ${trackId}`);
+    }
+  }
+  behaviorReview.textContent = reviewTracks.length > 0 ? reviewTracks.join(", ") : "None";
+
+  const suggestions = Array.isArray(latest?.training_data_suggestions)
+    ? latest.training_data_suggestions
+    : [];
+  if (suggestions.length === 0) {
+    behaviorTraining.textContent = "None";
+  } else {
+    behaviorTraining.textContent = suggestions
+      .slice(0, 6)
+      .map((item) => {
+        const track = item?.track_id != null ? `Track ${item.track_id}` : "Track ?";
+        const hint = item?.label_hint || item?.type || "label_hint_missing";
+        const reason = item?.reason ? ` (${item.reason})` : "";
+        return `${track}: ${hint}${reason}`;
+      })
+      .join("\n");
+  }
+}
+
+async function refreshBehaviorPanel() {
+  try {
+    const [latestResp, memoryResp] = await Promise.all([
+      fetch("/api/behavior-agent/latest"),
+      fetch("/api/behavior-agent/memory"),
+    ]);
+    const latest = latestResp.ok ? await latestResp.json() : {};
+    const memory = memoryResp.ok ? await memoryResp.json() : {};
+    renderBehaviorPanel(latest, memory);
+  } catch (err) {
+    behaviorSummary.textContent = "Behavior API unavailable.";
+    behaviorMeta.textContent = "No data yet";
+    behaviorPatterns.textContent = "None";
+    behaviorReview.textContent = "None";
+    behaviorTraining.textContent = "None";
+  }
+}
+
 connect();
+refreshBehaviorPanel();
+setInterval(refreshBehaviorPanel, 5000);

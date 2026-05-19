@@ -235,6 +235,32 @@ body {
   box-shadow: 0 0 10px rgba(83, 98, 113, 0.25);
 }
 
+.behavior-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+.behavior-card {
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  background: #fafbfd;
+}
+
+.behavior-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.behavior-text {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .drawer {
   position: fixed;
   top: 0;
@@ -290,5 +316,9 @@ fieldset {
 
   .ppe-status-grid {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .behavior-grid {
+    grid-template-columns: repeat(1, minmax(140px, 1fr));
   }
 }

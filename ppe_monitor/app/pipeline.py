@@ -18,6 +18,7 @@ from .association import (
     torso_bbox,
 )
 from .cache import VerifierCache
+from .event_stream import EventStreamWriter
 from .pose_tracker import PoseTrackerBase, TrackedPerson
 from .ppe_detector import PPEDetection, PPEDetectorBase, build_alias_index, canonicalize_label
 from .schemas import (
@@ -188,6 +189,7 @@ class MonitoringPipeline:
         self.mem_dominance_ratio = float(mem_cfg.get("dominance_ratio", 1.15))
         self.mem_dominance_min_negative = float(mem_cfg.get("dominance_min_negative", 2.5))
         self.mem_max_abs_score = float(mem_cfg.get("max_abs_score", 20.0))
+        self.event_writer = EventStreamWriter(config)
 
     def increment_dropped_frames(self, count: int) -> None:
         if count > 0:
@@ -205,6 +207,7 @@ class MonitoringPipeline:
             per_item_state: Dict[str, Classification] = {}
             per_item_state_raw: Dict[str, Classification] = {}
             per_item_reason: Dict[str, str] = {}
+            per_item_obs: Dict[str, dict] = {}
             for item in self.required_ppe:
                 decision = self._classify_person_item_with_reason(person, ppe_detections, item, frame)
                 item_state_raw = decision.classification
@@ -225,6 +228,15 @@ class MonitoringPipeline:
                 if stage in {"VIOLATION_CANDIDATE", "VIOLATION_CONFIRMED"}:
                     per_item_reason[item] = stage.lower()
                 self.last_item_reason[(person.person_id, item)] = decision.reason
+                per_item_obs[item] = {
+                    "status_raw": item_state_raw.value,
+                    "status_stable": item_state.value,
+                    "positive_conf": decision.positive_conf,
+                    "negative_conf": decision.negative_conf,
+                    "reason": decision.reason,
+                    "sm_stage": stage,
+                    "alert_status": self.state_machine.get_item_state(person.person_id, item).alert_status.value,
+                }
 
                 if item_state_raw in (Classification.COMPLIANT, Classification.VIOLATION):
                     self.classification_history.append((time.time(), item_state_raw))
@@ -245,6 +257,14 @@ class MonitoringPipeline:
                     )
 
             overall = self._overall_status(per_item_state)
+            self.event_writer.emit_person_observation(
+                frame_id=frame_id,
+                track_id=person.person_id,
+                bbox=person.bbox,
+                per_item=per_item_obs,
+                overall_status=overall.value,
+                tracking_confidence=getattr(person, "track_conf", None),
+            )
             person_payloads.append(
                 PersonPayload(
                     person_id=person.person_id,
@@ -263,6 +283,7 @@ class MonitoringPipeline:
                     overall_status=overall,
                 )
             )
+        self.event_writer.prune(p.person_id for p in tracked_people)
 
         active_alerts = self._build_active_alerts()
         metrics = self._build_metrics(len(tracked_people))

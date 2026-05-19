@@ -5,11 +5,14 @@ import json
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import yaml
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
+from .ai_behavior_agent.agent import BehaviorAgentService
+from .ai_behavior_agent.schemas import empty_agent_output
 from .pipeline import MonitoringPipeline
 from .startup_check import load_runtime_components
 from .video_source import VideoSource
@@ -28,6 +31,7 @@ def load_config() -> dict:
 async def lifespan(app: FastAPI):
     config = load_config()
     runtime = load_runtime_components(config, PROJECT_ROOT)
+    behavior_service = None
 
     source_cfg = config["video"]
     print(
@@ -59,10 +63,19 @@ async def lifespan(app: FastAPI):
     app.state.video_source = video_source
     app.state.pipeline = pipeline
 
+    behavior_cfg = config.get("behavior_agent", {}) or {}
+    if bool(behavior_cfg.get("enabled", False)):
+        behavior_service = BehaviorAgentService.from_config(config=config, project_root=PROJECT_ROOT)
+        behavior_service.start()
+        app.state.behavior_agent_service = behavior_service
+
     print(json.dumps({"event_type": "app_started"}))
     try:
         yield
     finally:
+        if behavior_service is not None:
+            behavior_service.stop()
+        pipeline.event_writer.close()
         video_source.close()
         print(json.dumps({"event_type": "app_stopped"}))
 
@@ -118,6 +131,53 @@ async def ws_stream(websocket: WebSocket) -> None:
             last_tick = now
     except WebSocketDisconnect:
         return
+
+
+@app.get("/api/behavior-agent/latest")
+async def behavior_agent_latest() -> dict:
+    cfg = app.state.config.get("behavior_agent", {}) if hasattr(app.state, "config") else {}
+    model = str(cfg.get("model", "qwen3:4b"))
+    path = _resolve_project_path(str(cfg.get("output_dir", "outputs/behavior_agent"))) / "latest_behavior_insight.json"
+    return _safe_load_json(path, default=empty_agent_output(model=model, time_window={"start": None, "end": None, "event_count": 0}))
+
+
+@app.get("/api/behavior-agent/history")
+async def behavior_agent_history() -> list[dict]:
+    cfg = app.state.config.get("behavior_agent", {}) if hasattr(app.state, "config") else {}
+    history_dir = _resolve_project_path(str(cfg.get("output_dir", "outputs/behavior_agent"))) / "history"
+    if not history_dir.exists():
+        return []
+    out: list[dict] = []
+    for path in sorted(history_dir.glob("behavior_agent_*.json"), reverse=True):
+        doc = _safe_load_json(path, default=None)
+        if isinstance(doc, dict):
+            out.append(doc)
+    return out
+
+
+@app.get("/api/behavior-agent/memory")
+async def behavior_agent_memory() -> dict:
+    cfg = app.state.config.get("behavior_agent", {}) if hasattr(app.state, "config") else {}
+    path = _resolve_project_path(str(cfg.get("memory_path", "outputs/person_behavior_memory.json")))
+    doc = _safe_load_json(path, default={})
+    return doc if isinstance(doc, dict) else {}
+
+
+def _safe_load_json(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def _resolve_project_path(value: str) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return (PROJECT_ROOT / path).resolve()
 
 
 app.mount("/", StaticFiles(directory=str(PROJECT_ROOT / "static"), html=True), name="static")

@@ -8,6 +8,23 @@ Real-time PPE compliance monitoring using a three-model ONNX cascade:
 
 The system uses tracked persons, keypoint-aware PPE association, verifier cache TTLs, and a per-item alert state machine with hysteresis.
 
+## Latest Features (May 2026)
+
+- Added a non-blocking per-person event stream at `outputs/detection_events.jsonl`.
+  - Source: `app/pipeline.py` + `app/event_stream.py`
+  - Trigger policy: raw-status change, stabilized-status change, state-machine stage change, or heartbeat.
+- Added a background AI behavior intelligence agent package:
+  - `app/ai_behavior_agent/` (reader, prompting, Ollama client, schemas, storage, memory reinforcer, runner CLI)
+  - Uses Ollama `qwen3:4b` with `think: false` and strict JSON parsing.
+  - Runs as standalone by default, optional background service inside FastAPI when enabled.
+- Added read-only APIs:
+  - `GET /api/behavior-agent/latest`
+  - `GET /api/behavior-agent/history`
+  - `GET /api/behavior-agent/memory`
+- Added dashboard panel: **AI Behavior Intelligence**.
+
+Detailed feature notes: `BEHAVIOR_AGENT.md`.
+
 ## Quick Start
 
 ```bash
@@ -59,6 +76,8 @@ All thresholds and behavior are in `config.yaml`.
 - `state_machine.window_size`: rolling window length
 - `state_machine.violation_threshold`: raise alert on this many violations in window
 - `state_machine.clear_threshold`: clear alert after this many consecutive compliant frames
+- `event_stream.*`: non-blocking richer per-person observation JSONL settings
+- `behavior_agent.*`: background behavior intelligence agent settings (`enabled` defaults to `false`)
 - `required_ppe`: PPE items to enforce
 - `dashboard.jpeg_quality`: JPEG quality used for stream frames
 - `dashboard.metrics_window_minutes`: time window used for dashboard aggregate metrics
@@ -81,6 +100,51 @@ Config keys:
 
 The pipeline converts uncertain VLM answers to `INDETERMINATE`, which reduces
 dashboard alert spam by design due to state-machine hysteresis.
+
+### Background Behavior Intelligence Agent (Qwen3 4B)
+
+This is a separate best-effort analytics layer and does **not** override safety logic.
+
+- Input stream: `outputs/detection_events.jsonl` (not `compliance_events.jsonl`)
+- Model: `qwen3:4b`
+- Endpoint used: Ollama `/api/generate`
+- Request constraints: `format: "json"` and `think: false`
+- Default mode: disabled in `config.yaml` (`behavior_agent.enabled: false`)
+
+Standalone run (recommended):
+
+```bash
+python -m app.ai_behavior_agent.agent \
+  --config config.yaml \
+  --events-jsonl outputs/detection_events.jsonl \
+  --interval 5 \
+  --once \
+  --model qwen3:4b \
+  --host http://127.0.0.1:11434
+```
+
+Outputs:
+
+- `outputs/behavior_agent/latest_behavior_insight.json`
+- `outputs/behavior_agent/history/behavior_agent_<timestamp>.json`
+- `outputs/behavior_agent/training_records.jsonl` (when enabled)
+- `outputs/person_behavior_memory.json` (safe allowlisted updates only)
+
+Safety constraints:
+
+- Agent never confirms final violations.
+- Agent never overrides the state machine or detector thresholds.
+- If Ollama is unavailable or emits invalid JSON, cycle is skipped safely.
+
+### Behavior Agent API
+
+When FastAPI is running, these read-only endpoints are available:
+
+- `GET /api/behavior-agent/latest`
+- `GET /api/behavior-agent/history`
+- `GET /api/behavior-agent/memory`
+
+If files are missing, each endpoint returns a safe empty payload.
 
 ### PPE Compliance Memory / Anti-Spam Status
 
@@ -111,6 +175,12 @@ python3 live_inference_window.py \
   --alert-cooldown 60 \
   --events-jsonl outputs/compliance_events.jsonl
 ```
+
+Live inference now also emits richer `ppe_observation` analytics records (when `event_stream.enabled: true`) to:
+
+- `outputs/detection_events.jsonl`
+
+That stream is the input for the background behavior agent.
 
 ## ONNX Caveats
 
@@ -228,6 +298,7 @@ pytest -q
 ```
 
 CI can run with `models.allow_mock_models: true` (no real model files required).
+This now includes behavior-agent tests (`event_reader`, `ollama_client` mocking, memory-reinforcer allowlist, runner output safety, event-stream queue behavior).
 
 ## Verifier Evaluation
 

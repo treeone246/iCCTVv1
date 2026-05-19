@@ -629,67 +629,70 @@ def main() -> None:
         memory_manager = PPEMemoryManager(mem_cfg)
         event_writer = ComplianceEventWriter(path=args.events_jsonl)
 
-    image_paths = collect_image_paths(args.source, project_root)
-    if image_paths:
-        run_image_mode(
-            args=args,
-            pipeline=pipeline,
-            image_paths=image_paths,
-            memory_manager=memory_manager,
-            event_writer=event_writer,
-        )
-        return
-
-    source = parse_source(args.source)
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        raise RuntimeError(f"Unable to open source: {args.source}")
-
-    window_name = "PPE Monitor Live (q or ESC to quit)"
-    dashboard_window_name = "PPE Status Dashboard"
-    frame_id = 0
     try:
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-
-            payload, _ = pipeline.process_frame(frame, frame_id)
-            memory_state_by_person: dict[int, str] = {}
-            memory_label_by_person: dict[int, str] = {}
-            if memory_manager is not None:
-                memory_state_by_person, memory_label_by_person = apply_memory_layer(
-                    payload=payload,
-                    manager=memory_manager,
-                    events=event_writer,
-                    camera_id=str(args.source),
-                    keypoint_conf_floor=float(args.skeleton_conf),
-                )
-            vis = draw_overlay(
-                frame,
-                payload,
-                show_skeleton=args.show_skeleton,
-                skeleton_conf=float(args.skeleton_conf),
-                show_reason_legend=args.show_reason_legend,
-                legend_position=args.legend_position,
-                memory_state_by_person=memory_state_by_person,
-                memory_label_by_person=memory_label_by_person,
+        image_paths = collect_image_paths(args.source, project_root)
+        if image_paths:
+            run_image_mode(
+                args=args,
+                pipeline=pipeline,
+                image_paths=image_paths,
+                memory_manager=memory_manager,
+                event_writer=event_writer,
             )
-            cv2.imshow(window_name, vis)
-            if not args.hide_status_dashboard:
-                status_dash = render_status_dashboard(payload)
-                cv2.imshow(dashboard_window_name, status_dash)
+            return
 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q") or key == 27:
-                break
+        source = parse_source(args.source)
+        cap = cv2.VideoCapture(source)
+        if not cap.isOpened():
+            raise RuntimeError(f"Unable to open source: {args.source}")
 
-            frame_id += 1
-            if args.max_frames > 0 and frame_id >= args.max_frames:
-                break
+        window_name = "PPE Monitor Live (q or ESC to quit)"
+        dashboard_window_name = "PPE Status Dashboard"
+        frame_id = 0
+        try:
+            while True:
+                ok, frame = cap.read()
+                if not ok:
+                    break
+
+                payload, _ = pipeline.process_frame(frame, frame_id)
+                memory_state_by_person: dict[int, str] = {}
+                memory_label_by_person: dict[int, str] = {}
+                if memory_manager is not None:
+                    memory_state_by_person, memory_label_by_person = apply_memory_layer(
+                        payload=payload,
+                        manager=memory_manager,
+                        events=event_writer,
+                        camera_id=str(args.source),
+                        keypoint_conf_floor=float(args.skeleton_conf),
+                    )
+                vis = draw_overlay(
+                    frame,
+                    payload,
+                    show_skeleton=args.show_skeleton,
+                    skeleton_conf=float(args.skeleton_conf),
+                    show_reason_legend=args.show_reason_legend,
+                    legend_position=args.legend_position,
+                    memory_state_by_person=memory_state_by_person,
+                    memory_label_by_person=memory_label_by_person,
+                )
+                cv2.imshow(window_name, vis)
+                if not args.hide_status_dashboard:
+                    status_dash = render_status_dashboard(payload)
+                    cv2.imshow(dashboard_window_name, status_dash)
+
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q") or key == 27:
+                    break
+
+                frame_id += 1
+                if args.max_frames > 0 and frame_id >= args.max_frames:
+                    break
+        finally:
+            cap.release()
+            cv2.destroyAllWindows()
     finally:
-        cap.release()
-        cv2.destroyAllWindows()
+        pipeline.event_writer.close()
 
 
 if __name__ == "__main__":

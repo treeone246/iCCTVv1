@@ -167,5 +167,34 @@ dashboard:
   jpeg_quality: 75
   metrics_window_minutes: 60
 
+event_stream:
+  enabled: true
+  path: "outputs/detection_events.jsonl"
+  camera_id: "rig_floor_cam_01"
+  heartbeat_seconds: 1.0
+  emit_on_raw_change: true
+  emit_on_stable_change: true
+  emit_on_sm_transition: true
+  queue_max: 2000
+
+behavior_agent:
+  enabled: false
+  interval_seconds: 5
+  events_jsonl: "outputs/detection_events.jsonl"
+  output_dir: "outputs/behavior_agent"
+  memory_path: "outputs/person_behavior_memory.json"
+  host: "http://127.0.0.1:11434"
+  model: "qwen3:4b"
+  max_recent_events: 100
+  temperature: 0.1
+  num_predict: 768
+  num_ctx: 4096
+  strict_json: true
+  update_memory: true
+  min_identity_confidence: 0.65
+  identity_switch_reid_threshold: 0.70
+  save_training_records: true
+  timeout_seconds: 8.0
+
 logging:
   structured: true
