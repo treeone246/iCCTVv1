@@ -24,6 +24,8 @@ from app.ppe_memory import (
 )
 from app.startup_check import load_runtime_components
 
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
 
 STATUS_COLOR = {
     "COMPLIANT": (40, 180, 40),
@@ -89,11 +91,28 @@ def parse_args() -> argparse.Namespace:
         help="Legend position for reason panel.",
     )
     parser.add_argument("--max-frames", type=int, default=0, help="Optional frame limit (0 = infinite).")
+    parser.add_argument(
+        "--image-interval-ms",
+        type=int,
+        default=0,
+        help="Autoplay interval for image mode (0 = manual next/prev controls).",
+    )
     return parser.parse_args()
 
 
 def parse_source(source_arg: str) -> int | str:
     return int(source_arg) if source_arg.isdigit() else source_arg
+
+
+def collect_image_paths(source_arg: str, project_root: Path) -> list[Path]:
+    src = Path(source_arg)
+    if not src.is_absolute():
+        src = (project_root / src).resolve()
+    if src.is_file() and src.suffix.lower() in IMAGE_SUFFIXES:
+        return [src]
+    if src.is_dir():
+        return sorted([p for p in src.iterdir() if p.is_file() and p.suffix.lower() in IMAGE_SUFFIXES])
+    return []
 
 
 def _human_reason(reason: str) -> str:
@@ -441,6 +460,88 @@ def apply_memory_layer(
     return memory_state_by_person, memory_label_by_person
 
 
+def run_image_mode(
+    args: argparse.Namespace,
+    pipeline: MonitoringPipeline,
+    image_paths: list[Path],
+    memory_manager: PPEMemoryManager | None,
+    event_writer: ComplianceEventWriter | None,
+) -> None:
+    if not image_paths:
+        raise RuntimeError("Image mode requested but no images were found.")
+
+    window_name = "PPE Monitor Live (Image Mode)"
+    dashboard_window_name = "PPE Status Dashboard"
+    idx = 0
+    frame_id = 0
+    shown = 0
+
+    while True:
+        image_path = image_paths[idx]
+        frame = cv2.imread(image_path.as_posix())
+        if frame is None:
+            raise RuntimeError(f"Failed to read image: {image_path.as_posix()}")
+
+        payload, _ = pipeline.process_frame(frame, frame_id)
+        memory_state_by_person: dict[int, str] = {}
+        memory_label_by_person: dict[int, str] = {}
+        if memory_manager is not None:
+            memory_state_by_person, memory_label_by_person = apply_memory_layer(
+                payload=payload,
+                manager=memory_manager,
+                events=event_writer,
+                camera_id="image_mode",
+            )
+
+        vis = draw_overlay(
+            frame,
+            payload,
+            show_skeleton=args.show_skeleton,
+            show_reason_legend=args.show_reason_legend,
+            legend_position=args.legend_position,
+            memory_state_by_person=memory_state_by_person,
+            memory_label_by_person=memory_label_by_person,
+        )
+        cv2.putText(
+            vis,
+            f"Image {idx + 1}/{len(image_paths)}: {image_path.name} | keys: n-next p-prev q-quit",
+            (12, max(40, vis.shape[0] - 12)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (240, 240, 240),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.imshow(window_name, vis)
+        if not args.hide_status_dashboard:
+            status_dash = render_status_dashboard(payload)
+            cv2.imshow(dashboard_window_name, status_dash)
+
+        wait_ms = max(1, int(args.image_interval_ms)) if args.image_interval_ms > 0 else 0
+        key = cv2.waitKey(wait_ms) & 0xFF
+
+        if key == ord("q") or key == 27:
+            break
+        if key in (ord("n"), ord("d"), 32):  # next
+            idx = (idx + 1) % len(image_paths)
+            frame_id += 1
+            shown += 1
+        elif key in (ord("p"), ord("a")):  # previous
+            idx = (idx - 1) % len(image_paths)
+        elif args.image_interval_ms > 0:
+            idx = (idx + 1) % len(image_paths)
+            frame_id += 1
+            shown += 1
+        else:
+            # manual mode: any other key means stay on current image
+            pass
+
+        if args.max_frames > 0 and shown >= args.max_frames:
+            break
+
+    cv2.destroyAllWindows()
+
+
 def main() -> None:
     args = parse_args()
     project_root = Path(__file__).resolve().parent
@@ -490,6 +591,17 @@ def main() -> None:
         )
         memory_manager = PPEMemoryManager(mem_cfg)
         event_writer = ComplianceEventWriter(path=args.events_jsonl)
+
+    image_paths = collect_image_paths(args.source, project_root)
+    if image_paths:
+        run_image_mode(
+            args=args,
+            pipeline=pipeline,
+            image_paths=image_paths,
+            memory_manager=memory_manager,
+            event_writer=event_writer,
+        )
+        return
 
     source = parse_source(args.source)
     cap = cv2.VideoCapture(source)
