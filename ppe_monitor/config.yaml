@@ -1,5 +1,5 @@
 video:
-  source: "C:/iCCTVv1/ppe_monitor/videos/simulationTest2.mp4"
+  source: "videos/simulationTest2.mp4"
   target_fps: 20
   drop_grab_limit: 3
 
