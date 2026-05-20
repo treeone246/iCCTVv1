@@ -88,6 +88,9 @@ class AssociationEngine:
         assoc_cfg = config["association"]
         self.keypoint_conf_floor = float(assoc_cfg["keypoint_conf_floor"])
         held_items = tuple(str(item) for item in assoc_cfg.get("held_items", []))
+        self.goggles_face_gate = bool(assoc_cfg.get("goggles_face_gate_enabled", True))
+        self.goggles_face_min_points = int(assoc_cfg.get("goggles_face_min_points", 2))
+        self.goggles_face_points = ("nose", "left_eye", "right_eye")
 
         self.rules: Dict[str, PPERule] = {
             "helmet": PPERule(
@@ -167,6 +170,9 @@ class AssociationEngine:
         keypoint_confidences: ConfidenceMap,
         frame_shape: Tuple[int, int, int],
     ) -> bool:
+        if rule.item == "goggles" and self.goggles_face_gate:
+            return self._goggles_face_observable(keypoints, keypoint_confidences, frame_shape)
+
         h, w = frame_shape[:2]
         visible_points = 0
 
@@ -181,6 +187,39 @@ class AssociationEngine:
             visible_points += 1
 
         return visible_points > 0
+
+    def _goggles_face_observable(
+        self,
+        keypoints: KeypointMap,
+        keypoint_confidences: ConfidenceMap,
+        frame_shape: Tuple[int, int, int],
+    ) -> bool:
+        h, w = frame_shape[:2]
+        visible: Dict[str, bool] = {}
+        visible_count = 0
+        for kp_name in self.goggles_face_points:
+            conf = keypoint_confidences.get(kp_name, 0.0)
+            point = keypoints.get(kp_name)
+            if point is None or conf < self.keypoint_conf_floor:
+                visible[kp_name] = False
+                continue
+            x, y = point
+            if x < 0 or y < 0 or x >= w or y >= h:
+                return False
+            visible[kp_name] = True
+            visible_count += 1
+
+        if visible_count < max(1, self.goggles_face_min_points):
+            return False
+
+        # Face is considered evaluable for goggles if:
+        # - both eyes are visible, or
+        # - nose plus at least one eye are visible.
+        both_eyes = bool(visible.get("left_eye")) and bool(visible.get("right_eye"))
+        nose_plus_one_eye = bool(visible.get("nose")) and (
+            bool(visible.get("left_eye")) or bool(visible.get("right_eye"))
+        )
+        return both_eyes or nose_plus_one_eye
 
 
 def bbox_center(box: BBox) -> Point:

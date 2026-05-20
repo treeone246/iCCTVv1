@@ -72,6 +72,8 @@ All thresholds and behavior are in `config.yaml`.
 - `inference.keypoint_conf_floor`: below this keypoint confidence => `INDETERMINATE`
 - `inference.imgsz`: inference image size
 - `association.*`: PPE binding distances, keypoint sets, coverall IoU threshold, held-distance ratio
+  - `association.goggles_face_gate_enabled`: require face visibility before goggles can be judged compliant/non-compliant
+  - `association.goggles_face_min_points`: minimum visible face keypoints for goggles assessment
 - `verifier_cache.ttl_compliant_seconds|ttl_violation_seconds`: cache TTLs per verifier result
 - `state_machine.window_size`: rolling window length
 - `state_machine.violation_threshold`: raise alert on this many violations in window

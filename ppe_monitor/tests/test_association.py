@@ -80,3 +80,24 @@ def test_unbound_and_invisible_returns_indeterminate() -> None:
     classification, bind = engine.classify_item("helmet", keypoints, conf, ppe, (300, 300, 3))
     assert classification == Classification.INDETERMINATE
     assert bind is None
+
+
+def test_goggles_single_eye_only_is_indeterminate() -> None:
+    engine = AssociationEngine(make_config())
+    keypoints, conf = base_keypoints()
+    conf["nose"] = 0.1
+    conf["right_eye"] = 0.1
+    ppe = []
+    classification, bind = engine.classify_item("goggles", keypoints, conf, ppe, (300, 300, 3))
+    assert classification == Classification.INDETERMINATE
+    assert bind is None
+
+
+def test_goggles_nose_plus_one_eye_allows_assessment() -> None:
+    engine = AssociationEngine(make_config())
+    keypoints, conf = base_keypoints()
+    conf["right_eye"] = 0.1
+    ppe = []
+    classification, bind = engine.classify_item("goggles", keypoints, conf, ppe, (300, 300, 3))
+    assert classification == Classification.VIOLATION_TENTATIVE
+    assert bind is None
