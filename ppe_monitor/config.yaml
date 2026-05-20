@@ -185,16 +185,16 @@ behavior_agent:
   memory_path: "outputs/person_behavior_memory.json"
   host: "http://127.0.0.1:11434"
   model: "qwen3:4b"
-  max_recent_events: 100
+  max_recent_events: 30
   temperature: 0.1
-  num_predict: 768
-  num_ctx: 4096
+  num_predict: 256
+  num_ctx: 2048
   strict_json: true
   update_memory: true
   min_identity_confidence: 0.65
   identity_switch_reid_threshold: 0.70
   save_training_records: true
-  timeout_seconds: 60
+  timeout_seconds: 90
 
 logging:
   structured: true
