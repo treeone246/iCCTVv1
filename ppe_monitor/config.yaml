@@ -179,7 +179,7 @@ event_stream:
 
 behavior_agent:
   enabled: false
-  interval_seconds: 5
+  interval_seconds: 10
   events_jsonl: "outputs/detection_events.jsonl"
   output_dir: "outputs/behavior_agent"
   memory_path: "outputs/person_behavior_memory.json"
@@ -194,7 +194,7 @@ behavior_agent:
   min_identity_confidence: 0.65
   identity_switch_reid_threshold: 0.70
   save_training_records: true
-  timeout_seconds: 8.0
+  timeout_seconds: 60
 
 logging:
   structured: true
