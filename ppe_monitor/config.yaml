@@ -4,10 +4,10 @@ video:
   drop_grab_limit: 3
 
 runtime:
-  backend: "deepstream"  # options: python, deepstream
+  backend: "python"  # options: python, deepstream
 
 deepstream:
-  enabled: true
+  enabled: false
   # Multi-camera Phase 2:
   # - if source_uris is non-empty, it is used.
   # - otherwise source_uri (or video.source fallback) is used as single source.
