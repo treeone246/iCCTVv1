@@ -69,6 +69,17 @@
             <div class="compute-title">Jetson jtop Exporter</div>
             <div id="computeJetson" class="compute-text">Waiting for exporter...</div>
           </div>
+          <div class="compute-card compute-card-wide">
+            <div class="compute-title">Performance Advisor</div>
+            <div id="computeAdvisor" class="compute-text">Collecting runtime signals...</div>
+          </div>
+          <div class="compute-card compute-card-wide">
+            <div class="compute-title">Realtime Trends</div>
+            <div class="compute-subtitle">FPS and Estimated TOPS (last ~90 samples)</div>
+            <canvas id="trendFpsTops" class="trend-canvas" width="900" height="140"></canvas>
+            <div class="compute-subtitle">System Memory % and Process RSS MB (last ~90 samples)</div>
+            <canvas id="trendMem" class="trend-canvas" width="900" height="140"></canvas>
+          </div>
         </div>
       </div>
     </section>

@@ -13,6 +13,9 @@ const computeOverall = document.getElementById("computeOverall");
 const computeModels = document.getElementById("computeModels");
 const computeMemory = document.getElementById("computeMemory");
 const computeJetson = document.getElementById("computeJetson");
+const computeAdvisor = document.getElementById("computeAdvisor");
+const trendFpsTops = document.getElementById("trendFpsTops");
+const trendMem = document.getElementById("trendMem");
 const behaviorSummary = document.getElementById("behaviorSummary");
 const behaviorMeta = document.getElementById("behaviorMeta");
 const behaviorPatterns = document.getElementById("behaviorPatterns");
@@ -32,6 +35,14 @@ const STATUS_COLOR = {
 const acknowledgedAlerts = new Set();
 let pendingBlob = null;
 const REQUIRED_ITEMS = ["helmet", "gloves", "coverall", "boots", "goggles"];
+let latestJetsonSnapshot = null;
+const TREND_LIMIT = 90;
+const trendState = {
+  fps: [],
+  tops: [],
+  memPct: [],
+  rssMb: [],
+};
 
 settingsBtn.addEventListener("click", () => settingsDrawer.classList.remove("hidden"));
 closeSettingsBtn.addEventListener("click", () => settingsDrawer.classList.add("hidden"));
@@ -254,6 +265,132 @@ function renderComputePanel(metrics) {
     `Process RSS: ${procRss.toFixed(1)} MB\n` +
     `Process VMS: ${procVms.toFixed(1)} MB\n` +
     `System: ${sysUsed.toFixed(1)} / ${sysTotal.toFixed(1)} MB (${sysPct.toFixed(1)}%)`;
+
+  renderPerformanceAdvisor(metrics, latestJetsonSnapshot);
+  pushTrendPoint(trendState.fps, Number(metrics.fps ?? 0));
+  pushTrendPoint(trendState.tops, Number(metrics.estimated_tops_per_sec ?? 0));
+  pushTrendPoint(trendState.memPct, Number(metrics.system_memory_utilization_pct ?? 0));
+  pushTrendPoint(trendState.rssMb, Number(metrics.process_rss_mb ?? 0));
+  drawTrendChart(trendFpsTops, [trendState.fps, trendState.tops], ["#0b66ff", "#d93025"], ["FPS", "TOPS"]);
+  drawTrendChart(trendMem, [trendState.memPct, trendState.rssMb], ["#a06a00", "#13a6a6"], ["SYS MEM %", "RSS MB"]);
+}
+
+function renderPerformanceAdvisor(metrics, jetson) {
+  const fps = Number(metrics.fps ?? 0);
+  const util = Number(metrics.estimated_compute_utilization_pct ?? 0);
+  const tops = Number(metrics.estimated_tops_per_sec ?? 0);
+  const dropped = Number(metrics.dropped_frames ?? 0);
+  const sysMemPct = Number(metrics.system_memory_utilization_pct ?? 0);
+
+  const jetsonCpu = Number(jetson?.cpu_utilization_pct ?? 0);
+  const jetsonGpu = Number(jetson?.gpu_utilization_pct ?? 0);
+  const jetsonPower = Number(jetson?.power_w ?? 0);
+  const jetsonTemp = Number(jetson?.temperature_c ?? 0);
+
+  let status = "Balanced";
+  let bottleneck = "No major bottleneck detected.";
+  let recommendation = "Keep baseline and monitor for 5-10 minutes.";
+
+  if (fps < 4 && jetsonGpu >= 90) {
+    status = "GPU Saturated";
+    bottleneck = "GPU is near full utilization at low FPS.";
+    recommendation = "Use TensorRT engines for all models and reduce model load (disable ensemble or heavier verifier paths). Consider Jetson upgrade if throughput target is higher.";
+  } else if (fps < 4 && jetsonCpu >= 85 && jetsonGpu < 75) {
+    status = "CPU Bound";
+    bottleneck = "CPU is heavily utilized while GPU is not saturated.";
+    recommendation = "Optimize preprocessing/postprocessing, disable reload mode, and reduce per-frame Python overhead.";
+  } else if (sysMemPct >= 85) {
+    status = "Memory Pressure";
+    bottleneck = "System memory utilization is high.";
+    recommendation = "Reduce concurrent models/features, increase swap carefully, or move to higher-memory target.";
+  } else if (util >= 80) {
+    status = "High Compute Load";
+    bottleneck = "Estimated compute utilization is high.";
+    recommendation = "If target FPS is still unmet, hardware upgrade or lighter models will likely be needed.";
+  }
+
+  computeAdvisor.textContent =
+    `Status: ${status}\n` +
+    `FPS: ${fps.toFixed(2)} | TOPS: ${tops.toFixed(3)} | Util: ${util.toFixed(1)}%\n` +
+    `Jetson CPU: ${jetsonCpu.toFixed(1)}% | GPU: ${jetsonGpu.toFixed(1)}% | Power: ${jetsonPower.toFixed(2)}W | Temp: ${jetsonTemp.toFixed(1)}C\n` +
+    `Dropped Frames: ${dropped}\n` +
+    `Bottleneck: ${bottleneck}\n` +
+    `Recommendation: ${recommendation}`;
+}
+
+function pushTrendPoint(arr, value) {
+  arr.push(Number.isFinite(value) ? value : 0);
+  if (arr.length > TREND_LIMIT) {
+    arr.shift();
+  }
+}
+
+function drawTrendChart(canvas, seriesList, colors, labels) {
+  if (!canvas) {
+    return;
+  }
+  const ctx2 = canvas.getContext("2d");
+  if (!ctx2) {
+    return;
+  }
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx2.clearRect(0, 0, w, h);
+  ctx2.fillStyle = "#ffffff";
+  ctx2.fillRect(0, 0, w, h);
+  ctx2.strokeStyle = "#d7dde3";
+  ctx2.strokeRect(0, 0, w, h);
+
+  const all = seriesList.flat();
+  const maxVal = Math.max(1, ...all);
+  const minVal = Math.min(0, ...all);
+  const range = Math.max(1e-6, maxVal - minVal);
+  const left = 26;
+  const right = w - 8;
+  const top = 12;
+  const bottom = h - 20;
+  const pw = right - left;
+  const ph = bottom - top;
+
+  ctx2.strokeStyle = "#edf1f5";
+  ctx2.beginPath();
+  ctx2.moveTo(left, top + ph * 0.5);
+  ctx2.lineTo(right, top + ph * 0.5);
+  ctx2.stroke();
+
+  for (let s = 0; s < seriesList.length; s += 1) {
+    const data = seriesList[s];
+    if (!data || data.length < 2) {
+      continue;
+    }
+    ctx2.strokeStyle = colors[s] || "#0b66ff";
+    ctx2.lineWidth = 1.5;
+    ctx2.beginPath();
+    for (let i = 0; i < data.length; i += 1) {
+      const x = left + (pw * i) / Math.max(1, TREND_LIMIT - 1);
+      const y = bottom - ((data[i] - minVal) / range) * ph;
+      if (i === 0) {
+        ctx2.moveTo(x, y);
+      } else {
+        ctx2.lineTo(x, y);
+      }
+    }
+    ctx2.stroke();
+  }
+
+  ctx2.fillStyle = "#536271";
+  ctx2.font = "11px Segoe UI";
+  ctx2.fillText(`max ${maxVal.toFixed(2)}`, 4, 12);
+  ctx2.fillText(`min ${minVal.toFixed(2)}`, 4, h - 8);
+
+  let lx = left;
+  for (let s = 0; s < labels.length; s += 1) {
+    ctx2.fillStyle = colors[s] || "#0b66ff";
+    ctx2.fillRect(lx, h - 14, 10, 3);
+    ctx2.fillStyle = "#536271";
+    ctx2.fillText(labels[s], lx + 14, h - 8);
+    lx += 110;
+  }
 }
 
 function updatePanels(payload) {
@@ -414,6 +551,7 @@ async function refreshBehaviorPanel() {
 }
 
 function renderJetsonPanel(payload) {
+  latestJetsonSnapshot = payload;
   if (!payload || payload.enabled !== true) {
     computeJetson.textContent = "Jetson exporter integration disabled in config.";
     return;

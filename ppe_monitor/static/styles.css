@@ -287,6 +287,25 @@ body {
   white-space: pre-wrap;
 }
 
+.compute-card-wide {
+  grid-column: span 2;
+}
+
+.compute-subtitle {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.trend-canvas {
+  width: 100%;
+  height: 140px;
+  margin-top: 6px;
+  border: 0.5px solid var(--line);
+  border-radius: 4px;
+  background: #ffffff;
+}
+
 .drawer {
   position: fixed;
   top: 0;
@@ -350,5 +369,9 @@ fieldset {
 
   .compute-grid {
     grid-template-columns: repeat(1, minmax(140px, 1fr));
+  }
+
+  .compute-card-wide {
+    grid-column: span 1;
   }
 }
