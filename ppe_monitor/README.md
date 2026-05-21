@@ -82,7 +82,7 @@ All thresholds and behavior are in `config.yaml`.
 - `deepstream.*`: DeepStream runtime settings
   - `source_uris` (Phase 2 multi-camera list), `source_uri` fallback for single source
   - `camera_ids` (per-source camera ids), `camera_id` fallback base id
-  - `engine_path`, `gie_config`, `tracker_config`
+  - `engine_path`, `onnx_fallback_path`, `labels_path`, `gie_config`, `tracker_config`
   - `batch_size`, `width`, `height`, `appsink_max_buffers`
   - `emit_jpeg`, `jpeg_quality`, `target_fps`
 - `models.pose|ppe|verifier`: ONNX paths

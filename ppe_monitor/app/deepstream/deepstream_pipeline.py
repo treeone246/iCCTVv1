@@ -170,18 +170,59 @@ class DeepStreamPipelineRunner:
         lines = src.read_text(encoding="utf-8").splitlines()
         out_lines: List[str] = []
         found_engine = False
+        found_onnx = False
+        found_label = False
         for line in lines:
             stripped = line.strip()
             if stripped.startswith("model-engine-file="):
                 out_lines.append(f"model-engine-file={self.settings.engine_path.as_posix()}")
                 found_engine = True
                 continue
+            if stripped.startswith("onnx-file="):
+                value = stripped.split("=", 1)[1].strip()
+                onnx_path = self._resolve_aux_path(
+                    value,
+                    fallback=self.settings.onnx_fallback_path,
+                )
+                out_lines.append(f"onnx-file={onnx_path.as_posix()}")
+                found_onnx = True
+                continue
+            if stripped.startswith("labelfile-path="):
+                value = stripped.split("=", 1)[1].strip()
+                label_path = self._resolve_aux_path(
+                    value,
+                    fallback=self.settings.labels_fallback_path,
+                )
+                out_lines.append(f"labelfile-path={label_path.as_posix()}")
+                found_label = True
+                continue
             out_lines.append(line)
         if not found_engine:
             out_lines.append(f"model-engine-file={self.settings.engine_path.as_posix()}")
+        if not found_onnx:
+            out_lines.append(f"onnx-file={self.settings.onnx_fallback_path.as_posix()}")
+        if not found_label:
+            out_lines.append(f"labelfile-path={self.settings.labels_fallback_path.as_posix()}")
         runtime_cfg = src.with_name(f"{src.stem}.runtime.txt")
         runtime_cfg.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
         return runtime_cfg
+
+    def _resolve_aux_path(self, value: str, *, fallback: Path) -> Path:
+        raw = str(value or "").strip()
+        if not raw:
+            return fallback
+        path = Path(raw)
+        if path.is_absolute():
+            return path
+        candidates = [
+            (self.settings.gie_config.parent / path).resolve(),
+            (self.settings.project_root / path).resolve(),
+            (Path.cwd() / path).resolve(),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return (self.settings.project_root / path).resolve()
 
     def _build_pipeline(self) -> None:
         Gst = self._Gst

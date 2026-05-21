@@ -17,6 +17,7 @@ def test_deepstream_missing_dependency_error_points_to_setup_doc(monkeypatch: py
         _raise_import_error,
     )
     settings = DeepStreamSettings(
+        project_root=Path("/tmp"),
         enabled=True,
         source_uris=["file:///tmp/video.mp4"],
         camera_ids=["cam"],
@@ -37,6 +38,8 @@ def test_deepstream_missing_dependency_error_points_to_setup_doc(monkeypatch: py
         jpeg_interval=1,
         appsink_max_buffers=4,
         engine_path=Path("models/best2.engine"),
+        onnx_fallback_path=Path("models/best2.onnx"),
+        labels_fallback_path=Path("configs/deepstream/labels_ppe.txt"),
     )
     runner = DeepStreamPipelineRunner(
         settings=settings,

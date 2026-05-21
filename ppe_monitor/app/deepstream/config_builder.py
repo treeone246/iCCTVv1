@@ -11,6 +11,7 @@ from ..runtime_backend import resolve_project_path
 
 @dataclass
 class DeepStreamSettings:
+    project_root: Path
     enabled: bool
     source_uris: list[str]
     camera_ids: list[str]
@@ -31,6 +32,8 @@ class DeepStreamSettings:
     jpeg_interval: int
     appsink_max_buffers: int
     engine_path: Path
+    onnx_fallback_path: Path
+    labels_fallback_path: Path
 
 
 def build_deepstream_settings(
@@ -77,6 +80,10 @@ def build_deepstream_settings(
     if not engine_path_value:
         engine_path_value = "models/best2.engine"
     engine_path = resolve_project_path(project_root, engine_path_value)
+    onnx_fallback_value = str(ds_cfg.get("onnx_fallback_path", models_cfg.get("ppe", "models/best2.onnx")))
+    onnx_fallback_path = resolve_project_path(project_root, onnx_fallback_value)
+    labels_fallback_value = str(ds_cfg.get("labels_path", "configs/deepstream/labels_ppe.txt"))
+    labels_fallback_path = resolve_project_path(project_root, labels_fallback_value)
 
     # Keep existing model path as fallback reference in docs/logging only.
     _ = models_cfg.get("ppe", "")
@@ -94,6 +101,7 @@ def build_deepstream_settings(
     batch_size = max(configured_batch, len(source_uris))
 
     return DeepStreamSettings(
+        project_root=project_root.resolve(),
         enabled=bool(ds_cfg.get("enabled", False)),
         source_uris=source_uris,
         camera_ids=camera_ids,
@@ -119,4 +127,6 @@ def build_deepstream_settings(
         jpeg_interval=max(1, int(ds_cfg.get("jpeg_interval", 1))),
         appsink_max_buffers=max(1, int(ds_cfg.get("appsink_max_buffers", 4))),
         engine_path=engine_path,
+        onnx_fallback_path=onnx_fallback_path,
+        labels_fallback_path=labels_fallback_path,
     )
