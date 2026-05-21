@@ -204,7 +204,7 @@ jetson_exporter:
   metric_map: {}
 
 face_gate:
-  enabled: false
+  enabled: true
   target_item: "goggles"
   # shadow_mode logs observations without changing decision.
   shadow_mode: true
