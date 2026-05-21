@@ -122,3 +122,7 @@ python -m app.deepstream.run --config config.yaml --source rtsp://user:pass@came
   export `models/best2.engine` first.
 - `Failed to create DeepStream elements`:
   one or more GStreamer/DeepStream plugins not visible (`GST_PLUGIN_PATH`).
+- `Could not find output coverage layer for parsing objects`:
+  your model output format does not match DeepStream default detector parser.
+  Use a custom parser (`parse-func=0`, `custom-lib-path`, `parse-bbox-func-name`)
+  for YOLO-style outputs.

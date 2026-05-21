@@ -16,9 +16,14 @@ cluster-mode=2
 maintain-aspect-ratio=1
 symmetric-padding=1
 
-# If your engine requires custom parsing for YOLO output, set these:
-# custom-lib-path=/opt/nvidia/deepstream/deepstream/lib/libnvdsinfer_custom_impl_Yolo.so
+# Most YOLO engines require a custom bbox parser in DeepStream.
+# If parse errors occur (e.g. "Could not find output coverage layer"),
+# set parse-func=0 and point to a valid custom parser library:
+# parse-func=0
+# custom-lib-path=/absolute/path/to/libnvdsinfer_custom_impl_Yolo.so
 # parse-bbox-func-name=NvDsInferParseYolo
+# Optional if engine build is delegated to custom lib:
+# engine-create-func-name=NvDsInferYoloCudaEngineGet
 
 [class-attrs-all]
 pre-cluster-threshold=0.25
