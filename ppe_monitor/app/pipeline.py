@@ -18,6 +18,7 @@ from .association import (
     torso_bbox,
 )
 from .cache import VerifierCache
+from .compute_monitor import ComputeProfile, estimate_compute_usage
 from .event_stream import EventStreamWriter
 from .pose_tracker import PoseTrackerBase, TrackedPerson
 from .ppe_detector import PPEDetection, PPEDetectorBase, build_alias_index, canonicalize_label
@@ -157,6 +158,9 @@ class MonitoringPipeline:
 
         self.dropped_frames = 0
         self.verifier_calls: Deque[float] = deque()
+        self.pose_calls: Deque[float] = deque()
+        self.ppe_calls: Deque[float] = deque()
+        self.verifier_aux_calls: Deque[float] = deque()
         self.classification_history: Deque[Tuple[float, Classification]] = deque()
         self._last_frame_perf: float | None = None
         self._fps = 0.0
@@ -191,12 +195,22 @@ class MonitoringPipeline:
         self.mem_max_abs_score = float(mem_cfg.get("max_abs_score", 20.0))
         self.event_writer = EventStreamWriter(config)
 
+        cm_cfg = config.get("compute_monitor", {}) or {}
+        self.compute_monitor_enabled = bool(cm_cfg.get("enabled", True))
+        self.compute_profile = ComputeProfile(
+            pose_gflops_per_infer=float(cm_cfg.get("pose_gflops_per_infer", 8.5)),
+            ppe_gflops_per_infer=float(cm_cfg.get("ppe_gflops_per_infer", 20.0)),
+            verifier_aux_gflops_per_infer=float(cm_cfg.get("verifier_aux_gflops_per_infer", 20.0)),
+            device_peak_gflops=float(cm_cfg.get("device_peak_gflops", 0.0)),
+        )
+
     def increment_dropped_frames(self, count: int) -> None:
         if count > 0:
             self.dropped_frames += int(count)
 
     def process_frame(self, frame: np.ndarray, frame_id: int) -> tuple[FramePayload, bytes]:
         self._frames_processed += 1
+        self.pose_calls.append(time.time())
         frame_jpeg = self._encode_frame(frame)
         tracked_people = self.pose_tracker.track(frame)
         self._prune_stability_state(tracked_people)
@@ -552,6 +566,12 @@ class MonitoringPipeline:
         now = time.time()
         while self.verifier_calls and self.verifier_calls[0] < now - 1.0:
             self.verifier_calls.popleft()
+        while self.pose_calls and self.pose_calls[0] < now - 1.0:
+            self.pose_calls.popleft()
+        while self.ppe_calls and self.ppe_calls[0] < now - 1.0:
+            self.ppe_calls.popleft()
+        while self.verifier_aux_calls and self.verifier_aux_calls[0] < now - 1.0:
+            self.verifier_aux_calls.popleft()
 
         while self.classification_history and self.classification_history[0][0] < now - self.metrics_window_seconds:
             self.classification_history.popleft()
@@ -570,6 +590,17 @@ class MonitoringPipeline:
             self._fps = instant_fps if self._fps == 0.0 else (0.8 * self._fps + 0.2 * instant_fps)
         self._last_frame_perf = perf_now
 
+        pose_rate = float(len(self.pose_calls))
+        ppe_rate = float(len(self.ppe_calls))
+        verifier_aux_rate = float(len(self.verifier_aux_calls))
+        compute = estimate_compute_usage(
+            enabled=self.compute_monitor_enabled,
+            profile=self.compute_profile,
+            pose_infer_per_sec=pose_rate,
+            ppe_infer_per_sec=ppe_rate,
+            verifier_aux_infer_per_sec=verifier_aux_rate,
+        )
+
         return MetricsPayload(
             fps=round(self._fps, 2),
             verifier_calls_last_sec=len(self.verifier_calls),
@@ -585,6 +616,16 @@ class MonitoringPipeline:
             ppe_model=self._ppe_model_path,
             ppe_task=self._ppe_task,
             ppe_fusion_mode=self.ppe_fusion_mode,
+            compute_monitor_enabled=compute.enabled,
+            pose_infer_per_sec=compute.pose_infer_per_sec,
+            ppe_infer_per_sec=compute.ppe_infer_per_sec,
+            verifier_aux_infer_per_sec=compute.verifier_aux_infer_per_sec,
+            pose_estimated_gflops_per_sec=compute.pose_estimated_gflops_per_sec,
+            ppe_estimated_gflops_per_sec=compute.ppe_estimated_gflops_per_sec,
+            verifier_aux_estimated_gflops_per_sec=compute.verifier_aux_estimated_gflops_per_sec,
+            estimated_gflops_per_sec=compute.estimated_gflops_per_sec,
+            estimated_tflops_per_sec=compute.estimated_tflops_per_sec,
+            estimated_compute_utilization_pct=compute.estimated_compute_utilization_pct,
         )
 
     def _overall_status(self, per_item_state: Dict[str, Classification]) -> OverallStatus:
@@ -758,6 +799,7 @@ class MonitoringPipeline:
     def _detect_ppe(self, frame: np.ndarray) -> List[PPEDetection]:
         """Run primary detector and optional YOLOE auxiliary model."""
         self._ppe_infer_calls += 1
+        self.ppe_calls.append(time.time())
         primary = self.ppe_detector.detect(frame)
         if not self.ensemble_enabled:
             self._last_detector_counts = {
@@ -792,6 +834,7 @@ class MonitoringPipeline:
         if not hasattr(self.verifier, "model"):
             return []
         self._verifier_aux_infer_calls += 1
+        self.verifier_aux_calls.append(time.time())
         model = getattr(self.verifier, "model")
         imgsz = getattr(self.verifier, "imgsz", self.config["inference"]["imgsz"])
 

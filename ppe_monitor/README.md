@@ -83,6 +83,10 @@ All thresholds and behavior are in `config.yaml`.
 - `required_ppe`: PPE items to enforce
 - `dashboard.jpeg_quality`: JPEG quality used for stream frames
 - `dashboard.metrics_window_minutes`: time window used for dashboard aggregate metrics
+- `compute_monitor.*`: estimated runtime compute-power monitor (GFLOPS/s)
+  - `compute_monitor.enabled`: enable/disable compute estimation in metrics/dashboard
+  - `pose_gflops_per_infer|ppe_gflops_per_infer|verifier_aux_gflops_per_infer`: per-model estimate inputs
+  - `device_peak_gflops`: optional hardware peak for utilization percentage
 
 ### Ollama VLM Verifier (Qwen2.5-VL 3B)
 
@@ -102,6 +106,22 @@ Config keys:
 
 The pipeline converts uncertain VLM answers to `INDETERMINATE`, which reduces
 dashboard alert spam by design due to state-machine hysteresis.
+
+### Compute Power Monitoring (Estimated FLOPS)
+
+The dashboard now reports estimated compute load from active inference calls:
+
+- `estimated_gflops_per_sec`
+- `estimated_tflops_per_sec`
+- `estimated_compute_utilization_pct` (when `device_peak_gflops > 0`)
+
+Important: this is an estimate derived from configured per-model GFLOPs and observed calls/sec.
+It is not a hardware counter from GPU performance registers.
+
+Jetson calibration preset:
+
+- `compute_monitor.device_peak_gflops: 8500` for Jetson Orin Nano 8GB standard mode
+- `compute_monitor.device_peak_gflops: 17000` for Jetson Orin Nano Super mode
 
 ### Background Behavior Intelligence Agent (Qwen3 4B)
 

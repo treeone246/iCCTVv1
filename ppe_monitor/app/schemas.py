@@ -109,6 +109,16 @@ class MetricsPayload(BaseModel):
     ppe_model: str = ""
     ppe_task: str = ""
     ppe_fusion_mode: str = "nms"
+    compute_monitor_enabled: bool = False
+    pose_infer_per_sec: float = 0.0
+    ppe_infer_per_sec: float = 0.0
+    verifier_aux_infer_per_sec: float = 0.0
+    pose_estimated_gflops_per_sec: float = 0.0
+    ppe_estimated_gflops_per_sec: float = 0.0
+    verifier_aux_estimated_gflops_per_sec: float = 0.0
+    estimated_gflops_per_sec: float = 0.0
+    estimated_tflops_per_sec: float = 0.0
+    estimated_compute_utilization_pct: float = 0.0
 
 
 class FramePayload(BaseModel):

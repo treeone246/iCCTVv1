@@ -169,6 +169,18 @@ dashboard:
   jpeg_quality: 75
   metrics_window_minutes: 60
 
+compute_monitor:
+  enabled: true
+  # Estimated model cost (GFLOPs per inference). Tune with your measured models.
+  pose_gflops_per_infer: 8.5
+  ppe_gflops_per_infer: 20.0
+  verifier_aux_gflops_per_infer: 20.0
+  # Jetson preset (FP16 dense throughput):
+  # - Orin Nano 8GB standard: ~8500 GFLOPS
+  # - Orin Nano Super mode: ~17000 GFLOPS
+  # Set to 0 to disable utilization percentage.
+  device_peak_gflops: 8500.0
+
 event_stream:
   enabled: true
   path: "outputs/detection_events.jsonl"
