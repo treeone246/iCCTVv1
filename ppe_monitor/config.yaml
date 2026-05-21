@@ -191,7 +191,7 @@ prometheus:
   enabled: true
 
 jetson_exporter:
-  enabled: false
+  enabled: true
   url: "http://127.0.0.1:9100/metrics"
   timeout_seconds: 1.5
   # Optional overrides if your exporter uses different metric names.
