@@ -84,6 +84,7 @@ class DeepStreamPipelineRunner:
         self._source_last_ts: Dict[int, float] = {}
         self._source_last_frame: Dict[int, int] = {}
         self._source_input_fps: Dict[int, float] = {}
+        self._frame_extract_errors = 0
 
     @property
     def dropped(self) -> int:
@@ -311,10 +312,10 @@ class DeepStreamPipelineRunner:
         if not capsfilter.link(appsink):
             raise RuntimeError("Failed to link capsfilter -> appsink")
 
-        tracker_src = tracker.get_static_pad("src")
-        if tracker_src is None:
-            raise RuntimeError("Unable to get nvtracker src pad for metadata probe")
-        tracker_src.add_probe(Gst.PadProbeType.BUFFER, self._on_tracker_buffer_probe, None)
+        rgba_src = capsfilter.get_static_pad("src")
+        if rgba_src is None:
+            raise RuntimeError("Unable to get capsfilter src pad for metadata probe")
+        rgba_src.add_probe(Gst.PadProbeType.BUFFER, self._on_tracker_buffer_probe, None)
 
         self._bus = self._pipeline.get_bus()
         if self._bus is not None:
@@ -453,7 +454,14 @@ class DeepStreamPipelineRunner:
                         frame_bgr = cv2.cvtColor(frame_copy, cv2.COLOR_RGBA2BGR)
                     elif frame_copy.ndim == 3 and frame_copy.shape[2] == 3:
                         frame_bgr = cv2.cvtColor(frame_copy, cv2.COLOR_RGB2BGR)
-                except Exception:
+                except Exception as exc:
+                    self._frame_extract_errors += 1
+                    if self._frame_extract_errors <= 5:
+                        _log_event(
+                            "deepstream_frame_extract_error",
+                            error=str(exc),
+                            hint="ensure probe is attached on RGBA path and get_nvds_buf_surface is supported by current memory type",
+                        )
                     frame_bgr = None
 
             now = time.time()
