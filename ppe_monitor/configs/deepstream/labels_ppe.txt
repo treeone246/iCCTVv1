@@ -1,0 +1,9 @@
+person
+helmet
+goggles
+gloves
+boots
+coverall
+no_gloves
+no_boots
+harness

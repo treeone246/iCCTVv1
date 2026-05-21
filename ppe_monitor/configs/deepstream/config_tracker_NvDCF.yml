@@ -1,0 +1,31 @@
+BaseConfig:
+  minDetectorConfidence: 0.1
+  minTrackerConfidence: 0.1
+
+TargetManagement:
+  maxTargetsPerStream: 150
+  minIouDiff4NewTarget: 0.5
+  minTrackerConfidence: 0.2
+  probationAge: 2
+  maxShadowTrackingAge: 20
+  earlyTerminationAge: 1
+
+TrajectoryManagement:
+  useUniqueID: 1
+  enableReAssoc: 1
+
+DataAssociator:
+  dataAssociatorType: 0
+  matchingScoreWeight4Iou: 0.8
+  minMatchingScore4Overall: 0.2
+  minMatchingScore4Iou: 0.1
+
+StateEstimator:
+  stateEstimatorType: 1
+
+VisualTracker:
+  visualTrackerType: 1
+  useHog: 1
+  useColorNames: 1
+  featureImgSizeLevel: 2
+  filterLr: 0.075

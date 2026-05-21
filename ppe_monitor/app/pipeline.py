@@ -183,6 +183,7 @@ class MonitoringPipeline:
         self._verifier_crop_infer_calls = 0
         self._verifier_ollama_calls = 0
         self._last_detector_counts = {"ppe_primary_raw": 0, "verifier_aux_raw": 0, "ppe_merged": 0}
+        self._last_backend = "python"
         self._ppe_model_path = str(config.get("models", {}).get("ppe", ""))
         self._ppe_task = "detect"
 
@@ -227,14 +228,34 @@ class MonitoringPipeline:
         if count > 0:
             self.dropped_frames += int(count)
 
-    def process_frame(self, frame: np.ndarray, frame_id: int) -> tuple[FramePayload, bytes]:
+    def process_frame(
+        self,
+        frame: np.ndarray,
+        frame_id: int,
+        *,
+        tracked_people_override: List[TrackedPerson] | None = None,
+        ppe_detections_override: List[PPEDetection] | None = None,
+        backend: str = "python",
+    ) -> tuple[FramePayload, bytes]:
         self._frames_processed += 1
-        self._pose_infer_calls += 1
-        self.pose_calls.append(time.time())
+        if tracked_people_override is None:
+            self._pose_infer_calls += 1
+            self.pose_calls.append(time.time())
         frame_jpeg = self._encode_frame(frame)
-        tracked_people = self.pose_tracker.track(frame)
+        tracked_people = tracked_people_override if tracked_people_override is not None else self.pose_tracker.track(frame)
         self._prune_stability_state(tracked_people)
-        ppe_detections = self._detect_ppe(frame)
+        if ppe_detections_override is not None:
+            self._ppe_infer_calls += 1
+            self.ppe_calls.append(time.time())
+            ppe_detections = ppe_detections_override
+            self._last_detector_counts = {
+                "ppe_primary_raw": len(ppe_detections_override),
+                "verifier_aux_raw": 0,
+                "ppe_merged": len(ppe_detections_override),
+            }
+        else:
+            ppe_detections = self._detect_ppe(frame)
+        self._last_backend = str(backend or "python")
 
         person_payloads: List[PersonPayload] = []
         for person in tracked_people:
@@ -723,6 +744,7 @@ class MonitoringPipeline:
             system_memory_used_mb=memory.system_memory_used_mb,
             system_memory_total_mb=memory.system_memory_total_mb,
             system_memory_utilization_pct=memory.system_memory_utilization_pct,
+            backend=str(getattr(self, "_last_backend", "python")),
         )
 
     def _overall_status(self, per_item_state: Dict[str, Classification]) -> OverallStatus:

@@ -13,10 +13,14 @@ from fastapi.staticfiles import StaticFiles
 
 from .ai_behavior_agent.agent import BehaviorAgentService
 from .ai_behavior_agent.schemas import empty_agent_output
+from .deepstream import DeepStreamPipelineRunner, build_deepstream_settings
+from .deepstream.compat import fill_unavailable_keypoints
 from .jetson_exporter_bridge import JetsonExporterBridge
 from .metrics_exporter import CONTENT_TYPE_LATEST, PrometheusMetricsExporter
 from .performance_logger import PerformanceLogWriter
 from .pipeline import MonitoringPipeline
+from .ppe_detector import build_alias_index
+from .runtime_backend import get_runtime_backend
 from .runtime_acceleration import summarize_runtime_acceleration
 from .startup_check import load_runtime_components
 from .video_source import VideoSource
@@ -34,26 +38,9 @@ def load_config() -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = load_config()
-    runtime = load_runtime_components(config, PROJECT_ROOT)
+    backend = get_runtime_backend(config)
+    runtime = load_runtime_components(config, PROJECT_ROOT, skip_ppe=(backend == "deepstream"))
     behavior_service = None
-
-    source_cfg = config["video"]
-    print(
-        json.dumps(
-            {
-                "event_type": "video_source_config",
-                "source": source_cfg["source"],
-                "source_type": type(source_cfg["source"]).__name__,
-                "target_fps": source_cfg["target_fps"],
-            }
-        )
-    )
-    video_source = VideoSource(
-        source=source_cfg["source"],
-        target_fps=float(source_cfg["target_fps"]),
-        drop_grab_limit=int(source_cfg.get("drop_grab_limit", 3)),
-    )
-    video_source.open()
 
     pipeline = MonitoringPipeline(
         pose_tracker=runtime.pose_tracker,
@@ -61,10 +48,74 @@ async def lifespan(app: FastAPI):
         verifier=runtime.verifier,
         config=config,
     )
+    video_source = None
+    deepstream_runner = None
+    deepstream_emit_jpeg = True
+    deepstream_source_id = 0
+    deepstream_camera_id = str(config.get("deepstream", {}).get("camera_id", "rig_floor_cam_01"))
+
+    if backend == "deepstream":
+        ds_settings = build_deepstream_settings(config, project_root=PROJECT_ROOT)
+        if not ds_settings.enabled:
+            raise RuntimeError(
+                "runtime.backend is 'deepstream' but deepstream.enabled is false. "
+                "Set deepstream.enabled: true in config.yaml."
+            )
+        alias_map = build_alias_index(config.get("ppe_label_aliases", {}))
+        ds_cfg = config.get("deepstream", {}) or {}
+        person_classes = set(str(x) for x in ds_cfg.get("person_classes", ["person"]))
+        ppe_classes = set(str(x) for x in config.get("required_ppe", []))
+        ppe_classes.update({"no_gloves", "no_boots", "harness"})
+        deepstream_runner = DeepStreamPipelineRunner(
+            settings=ds_settings,
+            label_map=ds_cfg.get("label_map", {}),
+            person_classes=person_classes,
+            ppe_classes=ppe_classes,
+            alias_to_canonical=alias_map,
+        )
+        deepstream_runner.start()
+        deepstream_emit_jpeg = bool(ds_settings.emit_jpeg)
+        source_cfg = {"source_uris": ds_settings.source_uris, "target_fps": ds_settings.target_fps}
+        print(
+            json.dumps(
+                {
+                    "event_type": "video_source_config",
+                    "backend": backend,
+                    "source_count": len(ds_settings.source_uris),
+                    "source_uris": ds_settings.source_uris,
+                    "camera_ids": ds_settings.camera_ids,
+                    "target_fps": source_cfg["target_fps"],
+                }
+            )
+        )
+    else:
+        source_cfg = config["video"]
+        print(
+            json.dumps(
+                {
+                    "event_type": "video_source_config",
+                    "backend": backend,
+                    "source": source_cfg["source"],
+                    "source_type": type(source_cfg["source"]).__name__,
+                    "target_fps": source_cfg["target_fps"],
+                }
+            )
+        )
+        video_source = VideoSource(
+            source=source_cfg["source"],
+            target_fps=float(source_cfg["target_fps"]),
+            drop_grab_limit=int(source_cfg.get("drop_grab_limit", 3)),
+        )
+        video_source.open()
 
     app.state.config = config
+    app.state.runtime_backend = backend
     app.state.runtime = runtime
     app.state.video_source = video_source
+    app.state.deepstream_runner = deepstream_runner
+    app.state.deepstream_emit_jpeg = deepstream_emit_jpeg
+    app.state.deepstream_source_id = deepstream_source_id
+    app.state.deepstream_camera_id = deepstream_camera_id
     app.state.pipeline = pipeline
     prom_cfg = config.get("prometheus", {}) or {}
     app.state.metrics_exporter = PrometheusMetricsExporter(enabled=bool(prom_cfg.get("enabled", True)))
@@ -84,8 +135,11 @@ async def lifespan(app: FastAPI):
         if behavior_service is not None:
             behavior_service.stop()
         app.state.performance_logger.close()
+        if app.state.deepstream_runner is not None:
+            app.state.deepstream_runner.stop()
         pipeline.event_writer.close()
-        video_source.close()
+        if video_source is not None:
+            video_source.close()
         print(json.dumps({"event_type": "app_stopped"}))
 
 
@@ -96,6 +150,7 @@ app = FastAPI(title="PPE Monitoring", lifespan=lifespan)
 async def health() -> dict:
     return {
         "status": "ok",
+        "backend": getattr(app.state, "runtime_backend", "python"),
         "provider_info": app.state.runtime.provider_info,
     }
 
@@ -104,31 +159,71 @@ async def health() -> dict:
 async def ws_stream(websocket: WebSocket) -> None:
     await websocket.accept()
     frame_id = 0
-    target_fps = float(app.state.config["video"]["target_fps"])
+    backend = str(getattr(app.state, "runtime_backend", "python"))
+    target_fps = float(app.state.config.get("video", {}).get("target_fps", 20))
+    if backend == "deepstream":
+        target_fps = float(app.state.config.get("deepstream", {}).get("target_fps", target_fps))
     frame_interval = 1.0 / max(1.0, target_fps)
     last_tick = time.perf_counter()
 
     try:
         while True:
             now = time.perf_counter()
-            lag = max(0.0, now - last_tick - frame_interval)
-            requested_drops = int(lag / frame_interval) if frame_interval > 0 else 0
+            if backend == "deepstream":
+                bundle = await asyncio.to_thread(
+                    app.state.deepstream_runner.read_bundle,
+                    1.0,
+                )
+                if bundle is None:
+                    await asyncio.sleep(frame_interval)
+                    continue
+                app.state.deepstream_source_id = int(bundle.source_id)
+                app.state.deepstream_camera_id = str(bundle.camera_id)
+                frame = bundle.frame_bgr
+                if frame is None:
+                    await asyncio.sleep(0.01)
+                    continue
+                fill_unavailable_keypoints(bundle.adapted.persons)
+                payload, jpeg = await asyncio.to_thread(
+                    app.state.pipeline.process_frame,
+                    frame,
+                    frame_id,
+                    ppe_detections_override=bundle.adapted.ppe_detections,
+                    backend="deepstream",
+                )
+                input_fps = float(bundle.input_fps)
+                primary_latency_ms = float(bundle.primary_infer_latency_ms)
+                tracker_latency_ms = float(bundle.tracker_latency_ms)
+                end_to_end_ms = float(bundle.end_to_end_latency_ms)
+            else:
+                lag = max(0.0, now - last_tick - frame_interval)
+                requested_drops = int(lag / frame_interval) if frame_interval > 0 else 0
 
-            frame, dropped = await asyncio.to_thread(
-                app.state.video_source.read_latest,
-                requested_drops,
+                frame, dropped = await asyncio.to_thread(
+                    app.state.video_source.read_latest,
+                    requested_drops,
+                )
+                app.state.pipeline.increment_dropped_frames(dropped)
+
+                if frame is None:
+                    await asyncio.sleep(frame_interval)
+                    continue
+
+                payload, jpeg = await asyncio.to_thread(
+                    app.state.pipeline.process_frame,
+                    frame,
+                    frame_id,
+                )
+                input_fps = float(payload.metrics.fps)
+                primary_latency_ms = 0.0
+                tracker_latency_ms = 0.0
+                end_to_end_ms = 0.0
+            camera_for_log = (
+                str(getattr(app.state, "deepstream_camera_id", ""))
+                if backend == "deepstream"
+                else None
             )
-            app.state.pipeline.increment_dropped_frames(dropped)
-
-            if frame is None:
-                await asyncio.sleep(frame_interval)
-                continue
-
-            payload, jpeg = await asyncio.to_thread(
-                app.state.pipeline.process_frame,
-                frame,
-                frame_id,
-            )
+            per_camera_fps = bundle.camera_fps_map if backend == "deepstream" else None
             jetson_snapshot = app.state.jetson_bridge.read_snapshot()
             app.state.metrics_exporter.update(
                 payload.metrics.model_dump(),
@@ -139,10 +234,19 @@ async def ws_stream(websocket: WebSocket) -> None:
                 frame_id=frame_id,
                 metrics=payload.metrics.model_dump(),
                 jetson=jetson_snapshot,
-                source="websocket_stream",
+                source="websocket_stream" if backend == "python" else "websocket_stream_deepstream",
+                backend=backend,
+                source_id=int(getattr(app.state, "deepstream_source_id", 0)),
+                input_fps=input_fps,
+                primary_infer_latency_ms=primary_latency_ms,
+                tracker_latency_ms=tracker_latency_ms,
+                end_to_end_latency_ms=end_to_end_ms,
+                camera_id=camera_for_log,
+                per_camera_fps=per_camera_fps,
                 timestamp=payload.timestamp,
             )
-            await websocket.send_bytes(jpeg)
+            if backend != "deepstream" or bool(getattr(app.state, "deepstream_emit_jpeg", True)):
+                await websocket.send_bytes(jpeg)
             await websocket.send_json(payload.model_dump())
             frame_id += 1
 

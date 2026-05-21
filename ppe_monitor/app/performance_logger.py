@@ -50,6 +50,14 @@ class PerformanceLogWriter:
         metrics: Mapping[str, Any],
         jetson: Optional[JetsonSnapshot] = None,
         source: str = "pipeline",
+        backend: str = "python",
+        source_id: int = 0,
+        input_fps: float = 0.0,
+        primary_infer_latency_ms: float = 0.0,
+        tracker_latency_ms: float = 0.0,
+        end_to_end_latency_ms: float = 0.0,
+        camera_id: Optional[str] = None,
+        per_camera_fps: Optional[Mapping[str, float]] = None,
         timestamp: Optional[float] = None,
     ) -> None:
         if not self.enabled:
@@ -66,15 +74,38 @@ class PerformanceLogWriter:
             "event_id": f"{int(now * 1000)}-{self._seq}",
             "timestamp": _iso(now),
             "timestamp_epoch": now,
+            "backend": str(backend or "python"),
             "frame_id": int(frame_id),
             "source": str(source),
-            "camera_id": self.camera_id,
+            "source_id": int(source_id),
+            "camera_id": str(camera_id or self.camera_id),
+            "input_fps": float(input_fps),
+            "processed_fps": float(metrics.get("fps", 0.0)),
+            "dropped_frames": int(metrics.get("dropped_frames", 0)),
+            "object_count": int(metrics.get("tracked_count", 0)),
+            "primary_infer_latency_ms": float(primary_infer_latency_ms),
+            "tracker_latency_ms": float(tracker_latency_ms),
+            "end_to_end_latency_ms": float(end_to_end_latency_ms),
+            "cpu_percent": float(jetson.cpu_utilization_pct) if jetson is not None else 0.0,
+            "gpu_percent": float(jetson.gpu_utilization_pct) if jetson is not None else 0.0,
+            "ram_percent": (
+                float(jetson.memory_utilization_pct)
+                if jetson is not None
+                else float(metrics.get("system_memory_utilization_pct", 0.0))
+            ),
+            "temperature_c": float(jetson.temperature_c) if jetson is not None else 0.0,
+            "verifier_calls_per_sec": float(metrics.get("verifier_calls_last_sec", 0.0)),
+            "ollama_calls_per_sec": float(metrics.get("verifier_ollama_calls_per_sec", 0.0)),
             "summary": {
                 "fps": float(metrics.get("fps", 0.0)),
+                "input_fps": float(input_fps),
                 "tracked_count": int(metrics.get("tracked_count", 0)),
                 "active_violations": int(metrics.get("active_violations", 0)),
                 "dropped_frames": int(metrics.get("dropped_frames", 0)),
                 "compliance_rate_pct": float(metrics.get("compliance_rate", 0.0)),
+                "primary_infer_latency_ms": float(primary_infer_latency_ms),
+                "tracker_latency_ms": float(tracker_latency_ms),
+                "end_to_end_latency_ms": float(end_to_end_latency_ms),
             },
             "compute": {
                 "flops_per_sec": float(metrics.get("estimated_flops_per_sec", 0.0)),
@@ -98,6 +129,11 @@ class PerformanceLogWriter:
                 "system_memory_utilization_pct": float(metrics.get("system_memory_utilization_pct", 0.0)),
             },
         }
+        if per_camera_fps:
+            record["per_camera_fps"] = {
+                str(k): float(v)
+                for k, v in dict(per_camera_fps).items()
+            }
         if self.include_jetson:
             record["jetson"] = {
                 "enabled": bool(jetson.enabled) if jetson is not None else False,

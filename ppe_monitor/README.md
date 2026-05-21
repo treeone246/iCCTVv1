@@ -28,6 +28,13 @@ The system uses tracked persons, keypoint-aware PPE association, verifier cache 
 - Added runtime acceleration visibility in dashboard:
   - Per-model CUDA/GPU status with glow indicators (green=enabled, red=disabled).
   - API: `GET /api/runtime/acceleration`.
+- Added optional DeepStream backend foundation (Phase 1):
+  - runtime backend selector: `runtime.backend` (`python` or `deepstream`)
+  - DeepStream module: `app/deepstream/`
+  - metadata adapter with pyds-free dataclasses for testability
+  - DeepStream config templates under `configs/deepstream/`
+  - Jetson setup guide: `docs/deepstream_jetson_setup.md`
+  - Phase 0 baseline template: `docs/perf_baseline_python.md`
 
 Detailed feature notes: `BEHAVIOR_AGENT.md`.
 
@@ -71,6 +78,13 @@ All thresholds and behavior are in `config.yaml`.
 - `video.source`: webcam index, file path, or RTSP URL
 - `video.target_fps`: desired streaming cadence
 - `video.drop_grab_limit`: max extra `.grab()` operations to catch up when slow
+- `runtime.backend`: `python` (default) or `deepstream`
+- `deepstream.*`: DeepStream runtime settings
+  - `source_uris` (Phase 2 multi-camera list), `source_uri` fallback for single source
+  - `camera_ids` (per-source camera ids), `camera_id` fallback base id
+  - `engine_path`, `gie_config`, `tracker_config`
+  - `batch_size`, `width`, `height`, `appsink_max_buffers`
+  - `emit_jpeg`, `jpeg_quality`, `target_fps`
 - `models.pose|ppe|verifier`: ONNX paths
 - `models.allow_mock_models`: if true, missing models are replaced with mocks
 - `inference.device`: `auto`, `cuda`, or `cpu`
@@ -161,6 +175,77 @@ The dashboard also includes a dedicated **Computation Performance** panel with:
 - overall FLOP/s, GFLOP/s, TFLOP/s
 - per-model FLOP/s breakdown
 - process RSS/VMS memory and system memory usage
+
+### DeepStream Backend (Phase 1 + Phase 2 Prep)
+
+You can keep default Python mode:
+
+```yaml
+runtime:
+  backend: "python"
+```
+
+Or enable DeepStream mode:
+
+```yaml
+runtime:
+  backend: "deepstream"
+deepstream:
+  enabled: true
+  engine_path: "models/best2.engine"
+```
+
+Multi-camera example:
+
+```yaml
+runtime:
+  backend: "deepstream"
+deepstream:
+  enabled: true
+  source_uris:
+    - "rtsp://user:pass@cam-a/stream1"
+    - "rtsp://user:pass@cam-b/stream1"
+  camera_ids: ["rig_floor_cam_01", "rig_floor_cam_02"]
+  batch_size: 2
+  engine_path: "models/best2.engine"
+```
+
+Run:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+Standalone DeepStream runner:
+
+```bash
+python -m app.deepstream.run \
+  --config config.yaml \
+  --source rtsp://user:pass@camera/stream1 \
+  --engine models/best2.engine \
+  --camera-id rig_floor_cam_01
+```
+
+Notes:
+
+- Phase 1 uses DeepStream for decode + primary detection + tracking.
+- Existing Python compliance/state-machine logic remains active.
+- Phase 2 support added for `source_uris` list in the same runner.
+- Per-camera FPS is logged in performance logs via `per_camera_fps` and camera-aware `camera_id`.
+- If DeepStream dependencies are missing, app raises a clear setup error.
+
+DeepStream files:
+
+- `app/deepstream/deepstream_pipeline.py`
+- `app/deepstream/metadata_adapter.py`
+- `configs/deepstream/`
+- `docs/deepstream_jetson_setup.md`
+
+### Phase 0 Baseline Requirement
+
+Before DeepStream rollout on Jetson, capture a Python backend baseline in:
+
+- `docs/perf_baseline_python.md`
 
 ### Performance Log File (JSONL)
 

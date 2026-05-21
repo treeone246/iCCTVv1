@@ -134,6 +134,7 @@ class MetricsPayload(BaseModel):
     system_memory_used_mb: float = 0.0
     system_memory_total_mb: float = 0.0
     system_memory_utilization_pct: float = 0.0
+    backend: str = "python"
 
 
 class FramePayload(BaseModel):

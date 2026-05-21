@@ -3,6 +3,39 @@ video:
   target_fps: 20
   drop_grab_limit: 3
 
+runtime:
+  backend: "python"  # options: python, deepstream
+
+deepstream:
+  enabled: false
+  # Multi-camera Phase 2:
+  # - if source_uris is non-empty, it is used.
+  # - otherwise source_uri (or video.source fallback) is used as single source.
+  source_uris: []
+  camera_ids: []
+  source_uri: ""
+  batch_size: 1
+  width: 1280
+  height: 720
+  live_source: true
+  gie_config: "configs/deepstream/config_infer_primary_yolo.txt"
+  tracker_config: "configs/deepstream/config_tracker_NvDCF.yml"
+  tracker_ll_lib_file: "/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so"
+  engine_path: "models/best2.engine"
+  person_classes: [person]
+  # Optional explicit class-id->label map if obj_label is not populated as expected.
+  label_map: {}
+  output_metadata_topic: "frame_payload"
+  enable_osd: false
+  enable_display: false
+  drop_frame_interval: 0
+  target_fps: 30
+  camera_id: "rig_floor_cam_01"
+  emit_jpeg: true
+  jpeg_quality: 75
+  jpeg_interval: 1
+  appsink_max_buffers: 4
+
 models:
   pose: models/yolo26n-pose.onnx
   ppe: models/best2.onnx

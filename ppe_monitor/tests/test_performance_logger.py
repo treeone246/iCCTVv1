@@ -78,3 +78,35 @@ def test_performance_logger_respects_interval(tmp_path: Path) -> None:
     assert payload["frame_id"] == 1
     assert "jetson" not in payload
     assert "metrics" not in payload
+
+
+def test_performance_logger_records_per_camera_fps(tmp_path: Path) -> None:
+    out = tmp_path / "perf_cameras.jsonl"
+    writer = PerformanceLogWriter(
+        {
+            "performance_logging": {
+                "enabled": True,
+                "path": str(out),
+                "interval_seconds": 0.1,
+            }
+        }
+    )
+    writer.emit(
+        frame_id=3,
+        metrics={"fps": 12.3},
+        backend="deepstream",
+        source_id=1,
+        camera_id="rig_floor_cam_02",
+        input_fps=15.0,
+        per_camera_fps={"rig_floor_cam_01": 14.2, "rig_floor_cam_02": 15.0},
+        timestamp=time.time(),
+    )
+    writer.close()
+    lines = _read_lines(out)
+    assert len(lines) == 1
+    payload = json.loads(lines[0])
+    assert payload["backend"] == "deepstream"
+    assert payload["camera_id"] == "rig_floor_cam_02"
+    assert payload["source_id"] == 1
+    assert payload["input_fps"] == 15.0
+    assert payload["per_camera_fps"]["rig_floor_cam_01"] == 14.2

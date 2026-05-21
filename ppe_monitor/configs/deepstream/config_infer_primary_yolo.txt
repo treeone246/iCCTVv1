@@ -1,0 +1,26 @@
+[property]
+gpu-id=0
+net-scale-factor=0.003921568627
+model-color-format=0
+onnx-file=models/best2.onnx
+model-engine-file=models/best2.engine
+labelfile-path=configs/deepstream/labels_ppe.txt
+batch-size=1
+network-mode=2
+num-detected-classes=9
+interval=0
+gie-unique-id=1
+process-mode=1
+network-type=0
+cluster-mode=2
+maintain-aspect-ratio=1
+symmetric-padding=1
+
+# If your engine requires custom parsing for YOLO output, set these:
+# custom-lib-path=/opt/nvidia/deepstream/deepstream/lib/libnvdsinfer_custom_impl_Yolo.so
+# parse-bbox-func-name=NvDsInferParseYolo
+
+[class-attrs-all]
+pre-cluster-threshold=0.25
+nms-iou-threshold=0.45
+topk=300

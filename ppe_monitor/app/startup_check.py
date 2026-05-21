@@ -149,7 +149,12 @@ def inspect_model_artifact(path: Path, providers: List[str], imgsz: int) -> dict
     }
 
 
-def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponents:
+def load_runtime_components(
+    config: dict,
+    project_root: Path,
+    *,
+    skip_ppe: bool = False,
+) -> RuntimeComponents:
     """Load or mock models, and emit startup diagnostics."""
 
     allow_mock = bool(config["models"]["allow_mock_models"])
@@ -172,6 +177,20 @@ def load_runtime_components(config: dict, project_root: Path) -> RuntimeComponen
     loaded_models: Dict[str, Optional[YOLO]] = {"pose": None, "ppe": None, "verifier": None}
 
     for key, configured_path, task in specs:
+        if key == "ppe" and skip_ppe:
+            provider_info[key] = {
+                "mode": "skipped",
+                "path": configured_path,
+                "task": task,
+                "reason": "runtime_backend_deepstream_primary_detector",
+            }
+            log_event(
+                "model_startup_skipped",
+                model_key=key,
+                path=str(configured_path),
+                reason="deepstream_primary_detector_active",
+            )
+            continue
         if key == "ppe":
             model_path, forced = _resolve_enforced_ppe_model(project_root, configured_path)
             if forced:

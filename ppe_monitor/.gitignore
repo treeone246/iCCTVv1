@@ -9,4 +9,7 @@ models/*.onnx
 models/*.engine
 models/*.pt
 models/*.pth
+*.engine
+*.plan
+configs/deepstream/*.runtime.txt
 *.log
