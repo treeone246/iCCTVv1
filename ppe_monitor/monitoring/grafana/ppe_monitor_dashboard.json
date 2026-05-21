@@ -1,0 +1,646 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_fps",
+          "legendFormat": "FPS",
+          "refId": "A"
+        },
+        {
+          "expr": "ppe_monitor_tracked_count",
+          "legendFormat": "Tracked",
+          "refId": "B"
+        },
+        {
+          "expr": "ppe_monitor_active_violations",
+          "legendFormat": "Active Violations",
+          "refId": "C"
+        }
+      ],
+      "title": "Pipeline Health",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 20
+              },
+              {
+                "color": "red",
+                "value": 50
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_estimated_compute_utilization_pct",
+          "legendFormat": "Utilization %",
+          "refId": "A"
+        }
+      ],
+      "title": "Estimated Compute Utilization %",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 2
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_estimated_tops_per_sec",
+          "legendFormat": "TOPS",
+          "refId": "A"
+        }
+      ],
+      "title": "Estimated TOPS",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_estimated_flops_per_sec",
+          "legendFormat": "FLOP/s",
+          "refId": "A"
+        },
+        {
+          "expr": "ppe_monitor_estimated_gflops_per_sec",
+          "legendFormat": "GFLOP/s",
+          "refId": "B"
+        },
+        {
+          "expr": "ppe_monitor_estimated_tflops_per_sec",
+          "legendFormat": "TFLOP/s",
+          "refId": "C"
+        }
+      ],
+      "title": "Total Compute Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_pose_infer_per_sec",
+          "legendFormat": "Pose infer/s",
+          "refId": "A"
+        },
+        {
+          "expr": "ppe_monitor_ppe_infer_per_sec",
+          "legendFormat": "PPE infer/s",
+          "refId": "B"
+        },
+        {
+          "expr": "ppe_monitor_verifier_aux_infer_per_sec",
+          "legendFormat": "Verifier aux infer/s",
+          "refId": "C"
+        },
+        {
+          "expr": "ppe_monitor_verifier_crop_infer_per_sec",
+          "legendFormat": "Verifier crop infer/s",
+          "refId": "D"
+        },
+        {
+          "expr": "ppe_monitor_verifier_ollama_calls_per_sec",
+          "legendFormat": "Verifier ollama call/s",
+          "refId": "E"
+        }
+      ],
+      "title": "Per-Model Inference Rate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "decmbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_process_rss_mb",
+          "legendFormat": "Process RSS MB",
+          "refId": "A"
+        },
+        {
+          "expr": "ppe_monitor_process_vms_mb",
+          "legendFormat": "Process VMS MB",
+          "refId": "B"
+        },
+        {
+          "expr": "ppe_monitor_system_memory_used_mb",
+          "legendFormat": "System Used MB",
+          "refId": "C"
+        },
+        {
+          "expr": "ppe_monitor_system_memory_total_mb",
+          "legendFormat": "System Total MB",
+          "refId": "D"
+        }
+      ],
+      "title": "Memory Consumption",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 12,
+        "y": 17
+      },
+      "id": 7,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_system_memory_utilization_pct",
+          "legendFormat": "System Memory %",
+          "refId": "A"
+        }
+      ],
+      "title": "System Memory Utilization %",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 6,
+        "x": 18,
+        "y": 17
+      },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_dropped_frames_total",
+          "legendFormat": "Dropped Frames",
+          "refId": "A"
+        },
+        {
+          "expr": "ppe_monitor_event_stream_dropped_total",
+          "legendFormat": "Dropped Event Writes",
+          "refId": "B"
+        }
+      ],
+      "title": "Dropped Counters",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_jetson_cpu_utilization_pct",
+          "legendFormat": "Jetson CPU %",
+          "refId": "A"
+        },
+        {
+          "expr": "ppe_monitor_jetson_gpu_utilization_pct",
+          "legendFormat": "Jetson GPU %",
+          "refId": "B"
+        },
+        {
+          "expr": "ppe_monitor_jetson_memory_utilization_pct",
+          "legendFormat": "Jetson Memory %",
+          "refId": "C"
+        }
+      ],
+      "title": "Jetson Exporter Utilization",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "decmbytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "ppe_monitor_jetson_memory_used_mb",
+          "legendFormat": "Jetson Memory Used MB",
+          "refId": "A"
+        },
+        {
+          "expr": "ppe_monitor_jetson_memory_total_mb",
+          "legendFormat": "Jetson Memory Total MB",
+          "refId": "B"
+        },
+        {
+          "expr": "ppe_monitor_jetson_temperature_c",
+          "legendFormat": "Jetson Temperature C",
+          "refId": "C"
+        },
+        {
+          "expr": "ppe_monitor_jetson_power_w",
+          "legendFormat": "Jetson Power W",
+          "refId": "D"
+        },
+        {
+          "expr": "ppe_monitor_jetson_fan_pwm_pct",
+          "legendFormat": "Jetson Fan PWM %",
+          "refId": "E"
+        }
+      ],
+      "title": "Jetson Exporter Thermals/Power/Memory",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "2s",
+  "schemaVersion": 39,
+  "style": "dark",
+  "tags": [
+    "ppe-monitor",
+    "jetson",
+    "prometheus"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "PPE Monitor Runtime Metrics",
+  "uid": "ppe-monitor-runtime",
+  "version": 1,
+  "weekStart": ""
+}

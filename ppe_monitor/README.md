@@ -85,8 +85,15 @@ All thresholds and behavior are in `config.yaml`.
 - `dashboard.metrics_window_minutes`: time window used for dashboard aggregate metrics
 - `compute_monitor.*`: estimated runtime compute-power monitor (GFLOPS/s)
   - `compute_monitor.enabled`: enable/disable compute estimation in metrics/dashboard
-  - `pose_gflops_per_infer|ppe_gflops_per_infer|verifier_aux_gflops_per_infer`: per-model estimate inputs
+  - `pose_gflops_per_infer|ppe_gflops_per_infer|verifier_aux_gflops_per_infer|verifier_crop_gflops_per_infer|verifier_ollama_gflops_per_infer`: per-model estimate inputs
   - `device_peak_gflops`: optional hardware peak for utilization percentage
+- `memory_monitor.enabled`: process/system memory monitoring
+- `prometheus.enabled`: enable `/metrics` Prometheus export endpoint
+- `jetson_exporter.*`: optional bridge to jtop-based Jetson Prometheus exporter
+  - `enabled`: enable bridge
+  - `url`: exporter metrics URL (default `http://127.0.0.1:9100/metrics`)
+  - `timeout_seconds`: fetch timeout
+  - `metric_map`: optional metric-name overrides per normalized field
 
 ### Ollama VLM Verifier (Qwen2.5-VL 3B)
 
@@ -111,12 +118,74 @@ dashboard alert spam by design due to state-machine hysteresis.
 
 The dashboard now reports estimated compute load from active inference calls:
 
+- `estimated_flops_per_sec` (FLOP/s)
 - `estimated_gflops_per_sec`
 - `estimated_tflops_per_sec`
+- `estimated_tops_per_sec`
 - `estimated_compute_utilization_pct` (when `device_peak_gflops > 0`)
 
 Important: this is an estimate derived from configured per-model GFLOPs and observed calls/sec.
 It is not a hardware counter from GPU performance registers.
+
+Model coverage includes:
+
+- pose tracker model
+- PPE primary model (`best2`)
+- verifier auxiliary full-frame detector (`yoloe_aux`)
+- verifier crop model calls
+- verifier Ollama calls (if a per-call estimate is configured)
+
+The dashboard also includes a dedicated **Computation Performance** panel with:
+
+- overall FLOP/s, GFLOP/s, TFLOP/s
+- per-model FLOP/s breakdown
+- process RSS/VMS memory and system memory usage
+
+### Grafana / Prometheus Integration
+
+The app now exposes a Prometheus endpoint:
+
+- `GET /metrics`
+
+It exports live gauges for:
+
+- FPS, tracked count, active violations, dropped frames
+- estimated FLOP/s, GFLOP/s, TFLOP/s, TOPS, utilization
+- per-model inference rates (pose, PPE, verifier aux/crop, verifier ollama)
+- process/system memory metrics
+- event stream dropped writes
+- normalized Jetson exporter gauges (`ppe_monitor_jetson_*`)
+
+Quick check:
+
+```bash
+curl -s http://127.0.0.1:8000/metrics | head
+```
+
+Starter files included:
+
+- Prometheus config: `monitoring/prometheus.yml`
+- Grafana dashboard JSON: `monitoring/grafana/ppe_monitor_dashboard.json`
+
+Prometheus run example:
+
+```bash
+prometheus --config.file=monitoring/prometheus.yml
+```
+
+Grafana import:
+
+1. Add Prometheus datasource in Grafana.
+2. Import `monitoring/grafana/ppe_monitor_dashboard.json`.
+3. Select your Prometheus datasource when prompted.
+
+Jetson jtop exporter integration modes:
+
+1. Grafana mode:
+   - Prometheus scrapes this app (`/metrics`) and optionally the raw Jetson exporter (`:9100/metrics`).
+   - Use included dashboard panels for `ppe_monitor_jetson_*`.
+2. Own dashboard mode:
+   - Web UI fetches `GET /api/jetson/stats` and shows a live Jetson card in **Computation Performance**.
 
 Jetson calibration preset:
 

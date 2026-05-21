@@ -9,6 +9,10 @@ const metricViolations = document.getElementById("metricViolations");
 const metricCompliance = document.getElementById("metricCompliance");
 const metricFps = document.getElementById("metricFps");
 const liveBadge = document.getElementById("liveBadge");
+const computeOverall = document.getElementById("computeOverall");
+const computeModels = document.getElementById("computeModels");
+const computeMemory = document.getElementById("computeMemory");
+const computeJetson = document.getElementById("computeJetson");
 const behaviorSummary = document.getElementById("behaviorSummary");
 const behaviorMeta = document.getElementById("behaviorMeta");
 const behaviorPatterns = document.getElementById("behaviorPatterns");
@@ -197,10 +201,7 @@ function renderPPEStatusDashboard(persons, metrics) {
     <div class="ppe-status-title">MODEL RUNTIME</div>
     <div class="ppe-status-stats">${modelName} (${metrics.ppe_task || "detect"}, fusion:${metrics.ppe_fusion_mode || "nms"})</div>
     <div class="ppe-status-stats">raw/frame BEST2:${metrics.ppe_primary_raw ?? 0} YOLOE:${metrics.verifier_aux_raw ?? 0} merged:${metrics.ppe_merged ?? 0}</div>
-    <div class="ppe-status-stats">infer calls BEST2:${metrics.ppe_infer_calls ?? 0} YOLOE:${metrics.verifier_aux_infer_calls ?? 0}</div>
-    <div class="ppe-status-stats">infer/s Pose:${Number(metrics.pose_infer_per_sec ?? 0).toFixed(1)} BEST2:${Number(metrics.ppe_infer_per_sec ?? 0).toFixed(1)} YOLOE:${Number(metrics.verifier_aux_infer_per_sec ?? 0).toFixed(1)}</div>
-    <div class="ppe-status-stats">est compute: ${Number(metrics.estimated_gflops_per_sec ?? 0).toFixed(1)} GFLOPS/s (${Number(metrics.estimated_tflops_per_sec ?? 0).toFixed(3)} TFLOPS/s)</div>
-    <div class="ppe-status-stats">est utilization: ${Number(metrics.estimated_compute_utilization_pct ?? 0).toFixed(1)}%</div>
+    <div class="ppe-status-stats">infer calls Pose:${metrics.pose_infer_calls ?? 0} BEST2:${metrics.ppe_infer_calls ?? 0} YOLOE(aux):${metrics.verifier_aux_infer_calls ?? 0} verifier(crop):${metrics.verifier_crop_infer_calls ?? 0} ollama:${metrics.verifier_ollama_calls ?? 0}</div>
   `;
   ppeStatusPanel.appendChild(runtimeCard);
 
@@ -226,6 +227,35 @@ function renderPPEStatusDashboard(persons, metrics) {
   }
 }
 
+function renderComputePanel(metrics) {
+  const totalG = Number(metrics.estimated_gflops_per_sec ?? 0);
+  const totalT = Number(metrics.estimated_tflops_per_sec ?? 0);
+  const totalTOPS = Number(metrics.estimated_tops_per_sec ?? 0);
+  const totalF = Number(metrics.estimated_flops_per_sec ?? 0);
+  const util = Number(metrics.estimated_compute_utilization_pct ?? 0);
+  computeOverall.textContent =
+    `Total: ${totalG.toFixed(1)} GFLOP/s (${totalT.toFixed(3)} TFLOP/s, ${totalTOPS.toFixed(3)} TOPS)\n` +
+    `Absolute: ${totalF.toLocaleString()} FLOP/s\n` +
+    `Estimated utilization: ${util.toFixed(1)}%`;
+
+  computeModels.textContent =
+    `Pose: ${Number(metrics.pose_estimated_gflops_per_sec ?? 0).toFixed(1)} GFLOP/s @ ${Number(metrics.pose_infer_per_sec ?? 0).toFixed(1)} infer/s\n` +
+    `PPE BEST2: ${Number(metrics.ppe_estimated_gflops_per_sec ?? 0).toFixed(1)} GFLOP/s @ ${Number(metrics.ppe_infer_per_sec ?? 0).toFixed(1)} infer/s\n` +
+    `Verifier YOLOE(aux): ${Number(metrics.verifier_aux_estimated_gflops_per_sec ?? 0).toFixed(1)} GFLOP/s @ ${Number(metrics.verifier_aux_infer_per_sec ?? 0).toFixed(1)} infer/s\n` +
+    `Verifier YOLOE(crop): ${Number(metrics.verifier_crop_estimated_gflops_per_sec ?? 0).toFixed(1)} GFLOP/s @ ${Number(metrics.verifier_crop_infer_per_sec ?? 0).toFixed(1)} infer/s\n` +
+    `Verifier Ollama: ${Number(metrics.verifier_ollama_estimated_gflops_per_sec ?? 0).toFixed(1)} GFLOP/s @ ${Number(metrics.verifier_ollama_calls_per_sec ?? 0).toFixed(1)} call/s`;
+
+  const procRss = Number(metrics.process_rss_mb ?? 0);
+  const procVms = Number(metrics.process_vms_mb ?? 0);
+  const sysUsed = Number(metrics.system_memory_used_mb ?? 0);
+  const sysTotal = Number(metrics.system_memory_total_mb ?? 0);
+  const sysPct = Number(metrics.system_memory_utilization_pct ?? 0);
+  computeMemory.textContent =
+    `Process RSS: ${procRss.toFixed(1)} MB\n` +
+    `Process VMS: ${procVms.toFixed(1)} MB\n` +
+    `System: ${sysUsed.toFixed(1)} / ${sysTotal.toFixed(1)} MB (${sysPct.toFixed(1)}%)`;
+}
+
 function updatePanels(payload) {
   const metrics = payload.metrics || {};
   metricTracked.textContent = String(metrics.tracked_count ?? 0);
@@ -235,6 +265,7 @@ function updatePanels(payload) {
 
   const persons = payload.persons || [];
   renderPPEStatusDashboard(persons, metrics);
+  renderComputePanel(metrics);
 
   personsPanel.innerHTML = "";
   for (const person of persons) {
@@ -382,6 +413,37 @@ async function refreshBehaviorPanel() {
   }
 }
 
+function renderJetsonPanel(payload) {
+  if (!payload || payload.enabled !== true) {
+    computeJetson.textContent = "Jetson exporter integration disabled in config.";
+    return;
+  }
+  if (payload.available !== true) {
+    computeJetson.textContent = `Exporter unavailable.\n${payload.error || "No response"}\nSource: ${payload.source_url || "unknown"}`;
+    return;
+  }
+  computeJetson.textContent =
+    `CPU: ${Number(payload.cpu_utilization_pct ?? 0).toFixed(1)}%\n` +
+    `GPU: ${Number(payload.gpu_utilization_pct ?? 0).toFixed(1)}%\n` +
+    `Memory: ${Number(payload.memory_utilization_pct ?? 0).toFixed(1)}% (${Number(payload.memory_used_mb ?? 0).toFixed(1)} / ${Number(payload.memory_total_mb ?? 0).toFixed(1)} MB)\n` +
+    `Temp: ${Number(payload.temperature_c ?? 0).toFixed(1)} C\n` +
+    `Power: ${Number(payload.power_w ?? 0).toFixed(2)} W\n` +
+    `Fan PWM: ${Number(payload.fan_pwm_pct ?? 0).toFixed(1)}%\n` +
+    `Source: ${payload.source_url || "unknown"}`;
+}
+
+async function refreshJetsonPanel() {
+  try {
+    const resp = await fetch("/api/jetson/stats");
+    const payload = resp.ok ? await resp.json() : { enabled: false, available: false, error: "http_error" };
+    renderJetsonPanel(payload);
+  } catch (err) {
+    computeJetson.textContent = "Jetson exporter API unavailable.";
+  }
+}
+
 connect();
 refreshBehaviorPanel();
+refreshJetsonPanel();
 setInterval(refreshBehaviorPanel, 5000);
+setInterval(refreshJetsonPanel, 5000);

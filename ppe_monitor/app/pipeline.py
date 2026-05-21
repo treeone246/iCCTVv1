@@ -34,6 +34,7 @@ from .schemas import (
     VerifierVerdict,
 )
 from .state_machine import PersonComplianceState
+from .runtime_monitor import read_memory_snapshot
 from .verifier import VerifierBase, VerifierContext
 
 
@@ -161,13 +162,17 @@ class MonitoringPipeline:
         self.pose_calls: Deque[float] = deque()
         self.ppe_calls: Deque[float] = deque()
         self.verifier_aux_calls: Deque[float] = deque()
+        self.verifier_ollama_calls: Deque[float] = deque()
         self.classification_history: Deque[Tuple[float, Classification]] = deque()
         self._last_frame_perf: float | None = None
         self._fps = 0.0
         self._stable_states: Dict[Tuple[int, str], StableStateTracker] = {}
         self._frames_processed = 0
+        self._pose_infer_calls = 0
         self._ppe_infer_calls = 0
         self._verifier_aux_infer_calls = 0
+        self._verifier_crop_infer_calls = 0
+        self._verifier_ollama_calls = 0
         self._last_detector_counts = {"ppe_primary_raw": 0, "verifier_aux_raw": 0, "ppe_merged": 0}
         self._ppe_model_path = str(config.get("models", {}).get("ppe", ""))
         self._ppe_task = "detect"
@@ -201,8 +206,12 @@ class MonitoringPipeline:
             pose_gflops_per_infer=float(cm_cfg.get("pose_gflops_per_infer", 8.5)),
             ppe_gflops_per_infer=float(cm_cfg.get("ppe_gflops_per_infer", 20.0)),
             verifier_aux_gflops_per_infer=float(cm_cfg.get("verifier_aux_gflops_per_infer", 20.0)),
+            verifier_crop_gflops_per_infer=float(cm_cfg.get("verifier_crop_gflops_per_infer", 20.0)),
+            verifier_ollama_gflops_per_infer=float(cm_cfg.get("verifier_ollama_gflops_per_infer", 0.0)),
             device_peak_gflops=float(cm_cfg.get("device_peak_gflops", 0.0)),
         )
+        mm_cfg = config.get("memory_monitor", {}) or {}
+        self.memory_monitor_enabled = bool(mm_cfg.get("enabled", True))
 
     def increment_dropped_frames(self, count: int) -> None:
         if count > 0:
@@ -210,6 +219,7 @@ class MonitoringPipeline:
 
     def process_frame(self, frame: np.ndarray, frame_id: int) -> tuple[FramePayload, bytes]:
         self._frames_processed += 1
+        self._pose_infer_calls += 1
         self.pose_calls.append(time.time())
         frame_jpeg = self._encode_frame(frame)
         tracked_people = self.pose_tracker.track(frame)
@@ -520,6 +530,10 @@ class MonitoringPipeline:
 
         verify_result = self.verifier.verify(item_crop, item, context=vctx)
         self.verifier_calls.append(time.time())
+        self._verifier_crop_infer_calls += 1
+        if str(getattr(verify_result, "source", "")).lower() == "ollama":
+            self.verifier_ollama_calls.append(time.time())
+            self._verifier_ollama_calls += 1
         if verify_result.verdict == VerifierVerdict.COMPLIANT:
             ttl = self.ttl_compliant
         elif verify_result.verdict == VerifierVerdict.VIOLATION:
@@ -572,6 +586,8 @@ class MonitoringPipeline:
             self.ppe_calls.popleft()
         while self.verifier_aux_calls and self.verifier_aux_calls[0] < now - 1.0:
             self.verifier_aux_calls.popleft()
+        while self.verifier_ollama_calls and self.verifier_ollama_calls[0] < now - 1.0:
+            self.verifier_ollama_calls.popleft()
 
         while self.classification_history and self.classification_history[0][0] < now - self.metrics_window_seconds:
             self.classification_history.popleft()
@@ -593,13 +609,18 @@ class MonitoringPipeline:
         pose_rate = float(len(self.pose_calls))
         ppe_rate = float(len(self.ppe_calls))
         verifier_aux_rate = float(len(self.verifier_aux_calls))
+        verifier_crop_rate = float(len(self.verifier_calls))
+        verifier_ollama_rate = float(len(self.verifier_ollama_calls))
         compute = estimate_compute_usage(
             enabled=self.compute_monitor_enabled,
             profile=self.compute_profile,
             pose_infer_per_sec=pose_rate,
             ppe_infer_per_sec=ppe_rate,
             verifier_aux_infer_per_sec=verifier_aux_rate,
+            verifier_crop_infer_per_sec=verifier_crop_rate,
+            verifier_ollama_calls_per_sec=verifier_ollama_rate,
         )
+        memory = read_memory_snapshot(enabled=self.memory_monitor_enabled)
 
         return MetricsPayload(
             fps=round(self._fps, 2),
@@ -613,6 +634,9 @@ class MonitoringPipeline:
             ppe_merged=int(self._last_detector_counts.get("ppe_merged", 0)),
             ppe_infer_calls=self._ppe_infer_calls,
             verifier_aux_infer_calls=self._verifier_aux_infer_calls,
+            pose_infer_calls=self._pose_infer_calls,
+            verifier_crop_infer_calls=self._verifier_crop_infer_calls,
+            verifier_ollama_calls=self._verifier_ollama_calls,
             ppe_model=self._ppe_model_path,
             ppe_task=self._ppe_task,
             ppe_fusion_mode=self.ppe_fusion_mode,
@@ -620,12 +644,24 @@ class MonitoringPipeline:
             pose_infer_per_sec=compute.pose_infer_per_sec,
             ppe_infer_per_sec=compute.ppe_infer_per_sec,
             verifier_aux_infer_per_sec=compute.verifier_aux_infer_per_sec,
+            verifier_crop_infer_per_sec=compute.verifier_crop_infer_per_sec,
+            verifier_ollama_calls_per_sec=compute.verifier_ollama_calls_per_sec,
             pose_estimated_gflops_per_sec=compute.pose_estimated_gflops_per_sec,
             ppe_estimated_gflops_per_sec=compute.ppe_estimated_gflops_per_sec,
             verifier_aux_estimated_gflops_per_sec=compute.verifier_aux_estimated_gflops_per_sec,
+            verifier_crop_estimated_gflops_per_sec=compute.verifier_crop_estimated_gflops_per_sec,
+            verifier_ollama_estimated_gflops_per_sec=compute.verifier_ollama_estimated_gflops_per_sec,
             estimated_gflops_per_sec=compute.estimated_gflops_per_sec,
             estimated_tflops_per_sec=compute.estimated_tflops_per_sec,
+            estimated_tops_per_sec=compute.estimated_tops_per_sec,
+            estimated_flops_per_sec=compute.estimated_flops_per_sec,
             estimated_compute_utilization_pct=compute.estimated_compute_utilization_pct,
+            memory_monitor_enabled=memory.enabled,
+            process_rss_mb=memory.process_rss_mb,
+            process_vms_mb=memory.process_vms_mb,
+            system_memory_used_mb=memory.system_memory_used_mb,
+            system_memory_total_mb=memory.system_memory_total_mb,
+            system_memory_utilization_pct=memory.system_memory_utilization_pct,
         )
 
     def _overall_status(self, per_item_state: Dict[str, Classification]) -> OverallStatus:

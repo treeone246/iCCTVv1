@@ -175,11 +175,27 @@ compute_monitor:
   pose_gflops_per_infer: 8.5
   ppe_gflops_per_infer: 20.0
   verifier_aux_gflops_per_infer: 20.0
+  verifier_crop_gflops_per_infer: 20.0
+  # Set this if you have a rough equivalent estimate per Ollama verifier call.
+  verifier_ollama_gflops_per_infer: 0.0
   # Jetson preset (FP16 dense throughput):
   # - Orin Nano 8GB standard: ~8500 GFLOPS
   # - Orin Nano Super mode: ~17000 GFLOPS
   # Set to 0 to disable utilization percentage.
   device_peak_gflops: 8500.0
+
+memory_monitor:
+  enabled: true
+
+prometheus:
+  enabled: true
+
+jetson_exporter:
+  enabled: false
+  url: "http://127.0.0.1:9100/metrics"
+  timeout_seconds: 1.5
+  # Optional overrides if your exporter uses different metric names.
+  metric_map: {}
 
 event_stream:
   enabled: true

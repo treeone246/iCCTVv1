@@ -104,8 +104,11 @@ class MetricsPayload(BaseModel):
     ppe_primary_raw: int = 0
     verifier_aux_raw: int = 0
     ppe_merged: int = 0
+    pose_infer_calls: int = 0
     ppe_infer_calls: int = 0
     verifier_aux_infer_calls: int = 0
+    verifier_crop_infer_calls: int = 0
+    verifier_ollama_calls: int = 0
     ppe_model: str = ""
     ppe_task: str = ""
     ppe_fusion_mode: str = "nms"
@@ -113,12 +116,24 @@ class MetricsPayload(BaseModel):
     pose_infer_per_sec: float = 0.0
     ppe_infer_per_sec: float = 0.0
     verifier_aux_infer_per_sec: float = 0.0
+    verifier_crop_infer_per_sec: float = 0.0
+    verifier_ollama_calls_per_sec: float = 0.0
     pose_estimated_gflops_per_sec: float = 0.0
     ppe_estimated_gflops_per_sec: float = 0.0
     verifier_aux_estimated_gflops_per_sec: float = 0.0
+    verifier_crop_estimated_gflops_per_sec: float = 0.0
+    verifier_ollama_estimated_gflops_per_sec: float = 0.0
     estimated_gflops_per_sec: float = 0.0
     estimated_tflops_per_sec: float = 0.0
+    estimated_tops_per_sec: float = 0.0
+    estimated_flops_per_sec: float = 0.0
     estimated_compute_utilization_pct: float = 0.0
+    memory_monitor_enabled: bool = False
+    process_rss_mb: float = 0.0
+    process_vms_mb: float = 0.0
+    system_memory_used_mb: float = 0.0
+    system_memory_total_mb: float = 0.0
+    system_memory_utilization_pct: float = 0.0
 
 
 class FramePayload(BaseModel):

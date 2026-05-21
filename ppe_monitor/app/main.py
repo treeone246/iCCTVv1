@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from .ai_behavior_agent.agent import BehaviorAgentService
 from .ai_behavior_agent.schemas import empty_agent_output
+from .jetson_exporter_bridge import JetsonExporterBridge
+from .metrics_exporter import CONTENT_TYPE_LATEST, PrometheusMetricsExporter
 from .pipeline import MonitoringPipeline
 from .startup_check import load_runtime_components
 from .video_source import VideoSource
@@ -62,6 +64,9 @@ async def lifespan(app: FastAPI):
     app.state.runtime = runtime
     app.state.video_source = video_source
     app.state.pipeline = pipeline
+    prom_cfg = config.get("prometheus", {}) or {}
+    app.state.metrics_exporter = PrometheusMetricsExporter(enabled=bool(prom_cfg.get("enabled", True)))
+    app.state.jetson_bridge = JetsonExporterBridge.from_app_config(config)
 
     behavior_cfg = config.get("behavior_agent", {}) or {}
     if bool(behavior_cfg.get("enabled", False)):
@@ -120,6 +125,12 @@ async def ws_stream(websocket: WebSocket) -> None:
                 frame,
                 frame_id,
             )
+            jetson_snapshot = app.state.jetson_bridge.read_snapshot()
+            app.state.metrics_exporter.update(
+                payload.metrics.model_dump(),
+                event_stream_dropped=int(getattr(app.state.pipeline.event_writer, "dropped", 0)),
+                jetson=jetson_snapshot,
+            )
             await websocket.send_bytes(jpeg)
             await websocket.send_json(payload.model_dump())
             frame_id += 1
@@ -161,6 +172,49 @@ async def behavior_agent_memory() -> dict:
     path = _resolve_project_path(str(cfg.get("memory_path", "outputs/person_behavior_memory.json")))
     doc = _safe_load_json(path, default={})
     return doc if isinstance(doc, dict) else {}
+
+
+@app.get("/api/jetson/stats")
+async def jetson_stats() -> dict:
+    bridge = getattr(app.state, "jetson_bridge", None)
+    if bridge is None:
+        return {
+            "enabled": False,
+            "available": False,
+            "error": "jetson_bridge_not_initialized",
+        }
+    snap = bridge.read_snapshot()
+    return {
+        "enabled": snap.enabled,
+        "available": snap.available,
+        "error": snap.error,
+        "source_url": snap.source_url,
+        "cpu_utilization_pct": snap.cpu_utilization_pct,
+        "gpu_utilization_pct": snap.gpu_utilization_pct,
+        "memory_utilization_pct": snap.memory_utilization_pct,
+        "memory_used_mb": snap.memory_used_mb,
+        "memory_total_mb": snap.memory_total_mb,
+        "temperature_c": snap.temperature_c,
+        "power_w": snap.power_w,
+        "fan_pwm_pct": snap.fan_pwm_pct,
+    }
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    exporter = getattr(app.state, "metrics_exporter", None)
+    if exporter is None:
+        return Response(content="# metrics exporter not initialized\n", media_type="text/plain", status_code=503)
+    bridge = getattr(app.state, "jetson_bridge", None)
+    snap = bridge.read_snapshot() if bridge is not None else None
+    exporter.update(
+        {},
+        event_stream_dropped=int(getattr(app.state.pipeline.event_writer, "dropped", 0))
+        if hasattr(app.state, "pipeline")
+        else 0,
+        jetson=snap,
+    )
+    return Response(content=exporter.render(), media_type=CONTENT_TYPE_LATEST)
 
 
 def _safe_load_json(path: Path, default: Any) -> Any:

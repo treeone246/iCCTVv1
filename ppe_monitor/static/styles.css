@@ -261,6 +261,32 @@ body {
   white-space: pre-wrap;
 }
 
+.compute-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.compute-card {
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  background: #fafbfd;
+}
+
+.compute-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+}
+
+.compute-text {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
 .drawer {
   position: fixed;
   top: 0;
@@ -319,6 +345,10 @@ fieldset {
   }
 
   .behavior-grid {
+    grid-template-columns: repeat(1, minmax(140px, 1fr));
+  }
+
+  .compute-grid {
     grid-template-columns: repeat(1, minmax(140px, 1fr));
   }
 }

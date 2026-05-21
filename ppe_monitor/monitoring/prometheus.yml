@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 2s
+  evaluation_interval: 2s
+
+scrape_configs:
+  - job_name: "ppe_monitor"
+    metrics_path: /metrics
+    static_configs:
+      # If Prometheus runs on the same host as uvicorn, keep 127.0.0.1:8000.
+      # If Prometheus runs in Docker, use host.docker.internal:8000 (or your host IP).
+      - targets: ["127.0.0.1:8000"]
+
+  # Optional direct scrape of jtop-based Jetson exporter.
+  # Keep this when you also want raw exporter metrics in Prometheus.
+  - job_name: "jetson_jtop_exporter"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:9100"]
