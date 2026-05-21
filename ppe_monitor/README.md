@@ -22,6 +22,9 @@ The system uses tracked persons, keypoint-aware PPE association, verifier cache 
   - `GET /api/behavior-agent/history`
   - `GET /api/behavior-agent/memory`
 - Added dashboard panel: **AI Behavior Intelligence**.
+- Added periodic runtime performance logging to `outputs/performance_logs.jsonl`.
+  - Source: `app/performance_logger.py`
+  - Includes FPS, violations, FLOP/s, TOPS, model infer rates, memory, and Jetson stats (if enabled).
 
 Detailed feature notes: `BEHAVIOR_AGENT.md`.
 
@@ -94,6 +97,12 @@ All thresholds and behavior are in `config.yaml`.
   - `pose_gflops_per_infer|ppe_gflops_per_infer|verifier_aux_gflops_per_infer|verifier_crop_gflops_per_infer|verifier_ollama_gflops_per_infer`: per-model estimate inputs
   - `device_peak_gflops`: optional hardware peak for utilization percentage
 - `memory_monitor.enabled`: process/system memory monitoring
+- `performance_logging.*`: periodic JSONL performance snapshots for offline analysis
+  - `enabled`: enable/disable performance log writer
+  - `path`: output JSONL file path (default `outputs/performance_logs.jsonl`)
+  - `interval_seconds`: snapshot interval
+  - `include_jetson`: include normalized Jetson stats payload
+  - `include_raw_metrics`: include full raw `metrics` object in each record
 - `prometheus.enabled`: enable `/metrics` Prometheus export endpoint
 - `jetson_exporter.*`: optional bridge to jtop-based Jetson Prometheus exporter
   - `enabled`: enable bridge
@@ -149,6 +158,26 @@ The dashboard also includes a dedicated **Computation Performance** panel with:
 - overall FLOP/s, GFLOP/s, TFLOP/s
 - per-model FLOP/s breakdown
 - process RSS/VMS memory and system memory usage
+
+### Performance Log File (JSONL)
+
+The app now writes periodic runtime snapshots to:
+
+- `outputs/performance_logs.jsonl`
+
+Each JSONL record has:
+
+- summary: FPS, tracked count, violations, dropped frames, compliance rate
+- compute: FLOP/s, GFLOP/s, TFLOP/s, TOPS, estimated utilization
+- model_rates: pose/PPE/verifier inference rates
+- memory: process and system memory
+- jetson: CPU/GPU/power/temp/fan (when Jetson bridge is enabled)
+
+Quick check:
+
+```bash
+tail -n 5 outputs/performance_logs.jsonl
+```
 
 ### Grafana / Prometheus Integration
 

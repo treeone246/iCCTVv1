@@ -14,6 +14,8 @@ import numpy as np
 import yaml
 
 from app.main import load_config
+from app.jetson_exporter_bridge import JetsonExporterBridge
+from app.performance_logger import PerformanceLogWriter
 from app.pipeline import MonitoringPipeline
 from app.compliance_events import ComplianceEventWriter
 from app.ppe_memory import (
@@ -500,6 +502,8 @@ def run_image_mode(
     image_paths: list[Path],
     memory_manager: PPEMemoryManager | None,
     event_writer: ComplianceEventWriter | None,
+    performance_logger: PerformanceLogWriter | None,
+    jetson_bridge: JetsonExporterBridge | None,
 ) -> None:
     if not image_paths:
         raise RuntimeError("Image mode requested but no images were found.")
@@ -517,6 +521,15 @@ def run_image_mode(
             raise RuntimeError(f"Failed to read image: {image_path.as_posix()}")
 
         payload, _ = pipeline.process_frame(frame, frame_id)
+        if performance_logger is not None:
+            jetson_snapshot = jetson_bridge.read_snapshot() if jetson_bridge is not None else None
+            performance_logger.emit(
+                frame_id=frame_id,
+                metrics=payload.metrics.model_dump(),
+                jetson=jetson_snapshot,
+                source="live_window_image_mode",
+                timestamp=payload.timestamp,
+            )
         memory_state_by_person: dict[int, str] = {}
         memory_label_by_person: dict[int, str] = {}
         if memory_manager is not None:
@@ -620,6 +633,8 @@ def main() -> None:
 
     memory_manager: PPEMemoryManager | None = None
     event_writer: ComplianceEventWriter | None = None
+    performance_logger = PerformanceLogWriter(config)
+    jetson_bridge = JetsonExporterBridge.from_app_config(config)
     if args.enable_memory:
         mem_cfg = PPEMemoryConfig(
             vote_window_frames=int(args.memory_window),
@@ -638,6 +653,8 @@ def main() -> None:
                 image_paths=image_paths,
                 memory_manager=memory_manager,
                 event_writer=event_writer,
+                performance_logger=performance_logger,
+                jetson_bridge=jetson_bridge,
             )
             return
 
@@ -656,6 +673,14 @@ def main() -> None:
                     break
 
                 payload, _ = pipeline.process_frame(frame, frame_id)
+                jetson_snapshot = jetson_bridge.read_snapshot() if jetson_bridge is not None else None
+                performance_logger.emit(
+                    frame_id=frame_id,
+                    metrics=payload.metrics.model_dump(),
+                    jetson=jetson_snapshot,
+                    source="live_window_video_mode",
+                    timestamp=payload.timestamp,
+                )
                 memory_state_by_person: dict[int, str] = {}
                 memory_label_by_person: dict[int, str] = {}
                 if memory_manager is not None:
@@ -692,6 +717,7 @@ def main() -> None:
             cap.release()
             cv2.destroyAllWindows()
     finally:
+        performance_logger.close()
         pipeline.event_writer.close()
 
 

@@ -15,6 +15,7 @@ from .ai_behavior_agent.agent import BehaviorAgentService
 from .ai_behavior_agent.schemas import empty_agent_output
 from .jetson_exporter_bridge import JetsonExporterBridge
 from .metrics_exporter import CONTENT_TYPE_LATEST, PrometheusMetricsExporter
+from .performance_logger import PerformanceLogWriter
 from .pipeline import MonitoringPipeline
 from .startup_check import load_runtime_components
 from .video_source import VideoSource
@@ -67,6 +68,7 @@ async def lifespan(app: FastAPI):
     prom_cfg = config.get("prometheus", {}) or {}
     app.state.metrics_exporter = PrometheusMetricsExporter(enabled=bool(prom_cfg.get("enabled", True)))
     app.state.jetson_bridge = JetsonExporterBridge.from_app_config(config)
+    app.state.performance_logger = PerformanceLogWriter(config)
 
     behavior_cfg = config.get("behavior_agent", {}) or {}
     if bool(behavior_cfg.get("enabled", False)):
@@ -80,6 +82,7 @@ async def lifespan(app: FastAPI):
     finally:
         if behavior_service is not None:
             behavior_service.stop()
+        app.state.performance_logger.close()
         pipeline.event_writer.close()
         video_source.close()
         print(json.dumps({"event_type": "app_stopped"}))
@@ -130,6 +133,13 @@ async def ws_stream(websocket: WebSocket) -> None:
                 payload.metrics.model_dump(),
                 event_stream_dropped=int(getattr(app.state.pipeline.event_writer, "dropped", 0)),
                 jetson=jetson_snapshot,
+            )
+            app.state.performance_logger.emit(
+                frame_id=frame_id,
+                metrics=payload.metrics.model_dump(),
+                jetson=jetson_snapshot,
+                source="websocket_stream",
+                timestamp=payload.timestamp,
             )
             await websocket.send_bytes(jpeg)
             await websocket.send_json(payload.model_dump())

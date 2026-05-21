@@ -193,6 +193,15 @@ compute_monitor:
 memory_monitor:
   enabled: true
 
+performance_logging:
+  enabled: true
+  path: "outputs/performance_logs.jsonl"
+  interval_seconds: 1.0
+  queue_max: 5000
+  include_jetson: true
+  include_raw_metrics: true
+  camera_id: "rig_floor_cam_01"
+
 prometheus:
   enabled: true
 
@@ -201,7 +210,7 @@ jetson_exporter:
   # mode:
   # - external: read from separate exporter URL
   # - local_jtop: read jtop directly in this app (uvicorn-only mode)
-  mode: "external"
+  mode: "local_jtop"
   url: "http://127.0.0.1:9100/metrics"
   timeout_seconds: 1.5
   refresh_seconds: 1.0
