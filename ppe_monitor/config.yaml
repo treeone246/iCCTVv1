@@ -203,6 +203,25 @@ jetson_exporter:
   # Optional overrides if your exporter uses different metric names.
   metric_map: {}
 
+face_gate:
+  enabled: false
+  target_item: "goggles"
+  # shadow_mode logs observations without changing decision.
+  shadow_mode: true
+  # enforce applies gate result to output classification.
+  enforce: false
+  log_enabled: true
+  log_every_n_frames: 10
+  # Current backend expects SCRFD ONNX model.
+  # TensorRT plan can still be used via external exporter/service workflow.
+  scrfd_model_path: "models/det_2.5g.onnx"
+  input_size: 640
+  score_threshold: 0.35
+  min_confidence: 0.45
+  min_face_area_ratio: 0.02
+  nms_iou_threshold: 0.40
+  cache_seconds: 0.2
+
 event_stream:
   enabled: true
   path: "outputs/detection_events.jsonl"

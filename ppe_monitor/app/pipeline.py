@@ -20,6 +20,7 @@ from .association import (
 from .cache import VerifierCache
 from .compute_monitor import ComputeProfile, estimate_compute_usage
 from .event_stream import EventStreamWriter
+from .face_gate import SCRFDFaceGate
 from .pose_tracker import PoseTrackerBase, TrackedPerson
 from .ppe_detector import PPEDetection, PPEDetectorBase, build_alias_index, canonicalize_label
 from .schemas import (
@@ -199,6 +200,7 @@ class MonitoringPipeline:
         self.mem_dominance_min_negative = float(mem_cfg.get("dominance_min_negative", 2.5))
         self.mem_max_abs_score = float(mem_cfg.get("max_abs_score", 20.0))
         self.event_writer = EventStreamWriter(config)
+        self.face_gate = SCRFDFaceGate(config)
 
         cm_cfg = config.get("compute_monitor", {}) or {}
         self.compute_monitor_enabled = bool(cm_cfg.get("enabled", True))
@@ -483,6 +485,31 @@ class MonitoringPipeline:
             ppe_detections=detection_dicts,
             frame_shape=frame.shape,
         )
+        base_reason = None
+        if item == self.face_gate.item and self.face_gate.enabled:
+            face_obs = self.face_gate.observe(frame, person.person_id, person.bbox)
+            if self.face_gate.should_log(frame_id=self._frames_processed):
+                log_event(
+                    "face_gate_observation",
+                    frame_id=self._frames_processed,
+                    person_id=person.person_id,
+                    item=item,
+                    mode="shadow" if self.face_gate.shadow_mode else "enforce",
+                    enforce_enabled=self.face_gate.enforce,
+                    available=face_obs.available,
+                    face_visible=face_obs.face_visible,
+                    face_conf=round(face_obs.best_confidence, 4),
+                    face_count=face_obs.face_count,
+                    reason=face_obs.reason,
+                    bbox=face_obs.best_bbox,
+                )
+
+            if self.face_gate.enforce and face_obs.available and not face_obs.face_visible:
+                base_classification = Classification.INDETERMINATE
+                bind = None
+                base_reason = "goggles_face_gate_indeterminate"
+            elif self.face_gate.shadow_mode and face_obs.available and not face_obs.face_visible:
+                base_reason = "goggles_face_gate_shadow_would_indeterminate"
 
         person_crop = self._crop_to_bbox(frame, person.bbox)
         item_crop = self._crop_for_item(frame, person, item)
@@ -500,7 +527,7 @@ class MonitoringPipeline:
             if base_classification == Classification.INDETERMINATE:
                 return ItemDecision(
                     base_classification,
-                    "keypoint_not_visible_or_out_of_frame",
+                    base_reason or "keypoint_not_visible_or_out_of_frame",
                     positive_conf=vctx.positive_conf,
                     negative_conf=vctx.negative_conf,
                 )

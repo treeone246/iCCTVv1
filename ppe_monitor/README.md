@@ -74,6 +74,11 @@ All thresholds and behavior are in `config.yaml`.
 - `association.*`: PPE binding distances, keypoint sets, coverall IoU threshold, held-distance ratio
   - `association.goggles_face_gate_enabled`: require face visibility before goggles can be judged compliant/non-compliant
   - `association.goggles_face_min_points`: minimum visible face keypoints for goggles assessment
+- `face_gate.*`: optional SCRFD face-visibility gate for goggles
+  - `enabled`: enable SCRFD face observations
+  - `shadow_mode`: log-only, no decision override
+  - `enforce`: override goggles to `INDETERMINATE` when face is not visible
+  - `scrfd_model_path`: SCRFD ONNX model path
 - `verifier_cache.ttl_compliant_seconds|ttl_violation_seconds`: cache TTLs per verifier result
 - `state_machine.window_size`: rolling window length
 - `state_machine.violation_threshold`: raise alert on this many violations in window
@@ -299,6 +304,33 @@ Live inference now also emits richer `ppe_observation` analytics records (when `
 - `outputs/detection_events.jsonl`
 
 That stream is the input for the background behavior agent.
+
+### SCRFD Goggles Face Gate (Shadow + Optional Enforcement)
+
+Goal: avoid false goggles violations when the face is not visible (back-facing / severe occlusion).
+
+Behavior:
+
+- In `shadow_mode`, app logs `face_gate_observation` events but keeps current decisions unchanged.
+- In `enforce` mode, if face is not visible for goggles item, result is forced to `INDETERMINATE`.
+
+Recommended rollout:
+
+1. Start with shadow mode only:
+   ```yaml
+   face_gate:
+     enabled: true
+     shadow_mode: true
+     enforce: false
+   ```
+2. Review logs for `face_gate_observation`.
+3. If results are good, switch to:
+   ```yaml
+   face_gate:
+     enforce: true
+   ```
+
+Note: current built-in face gate backend expects SCRFD ONNX model path (`.onnx`).
 
 ## ONNX Caveats
 
