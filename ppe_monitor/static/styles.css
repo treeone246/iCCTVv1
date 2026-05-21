@@ -291,6 +291,38 @@ body {
   grid-column: span 2;
 }
 
+.accel-list {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.accel-chip {
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  background: #ffffff;
+}
+
+.accel-chip.ok {
+  color: var(--ok);
+  border-color: var(--ok);
+  box-shadow: 0 0 10px rgba(31, 157, 85, 0.45);
+}
+
+.accel-chip.bad {
+  color: var(--bad);
+  border-color: var(--bad);
+  box-shadow: 0 0 10px rgba(217, 48, 37, 0.45);
+}
+
+.accel-chip.warn {
+  color: var(--warn);
+  border-color: var(--warn);
+  box-shadow: 0 0 10px rgba(217, 122, 0, 0.45);
+}
+
 .compute-subtitle {
   margin-top: 6px;
   color: var(--muted);

@@ -25,6 +25,9 @@ The system uses tracked persons, keypoint-aware PPE association, verifier cache 
 - Added periodic runtime performance logging to `outputs/performance_logs.jsonl`.
   - Source: `app/performance_logger.py`
   - Includes FPS, violations, FLOP/s, TOPS, model infer rates, memory, and Jetson stats (if enabled).
+- Added runtime acceleration visibility in dashboard:
+  - Per-model CUDA/GPU status with glow indicators (green=enabled, red=disabled).
+  - API: `GET /api/runtime/acceleration`.
 
 Detailed feature notes: `BEHAVIOR_AGENT.md`.
 

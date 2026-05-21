@@ -17,6 +17,7 @@ from .jetson_exporter_bridge import JetsonExporterBridge
 from .metrics_exporter import CONTENT_TYPE_LATEST, PrometheusMetricsExporter
 from .performance_logger import PerformanceLogWriter
 from .pipeline import MonitoringPipeline
+from .runtime_acceleration import summarize_runtime_acceleration
 from .startup_check import load_runtime_components
 from .video_source import VideoSource
 
@@ -208,6 +209,15 @@ async def jetson_stats() -> dict:
         "power_w": snap.power_w,
         "fan_pwm_pct": snap.fan_pwm_pct,
     }
+
+
+@app.get("/api/runtime/acceleration")
+async def runtime_acceleration() -> dict:
+    runtime = getattr(app.state, "runtime", None)
+    provider_info = getattr(runtime, "provider_info", {}) if runtime is not None else {}
+    summary = summarize_runtime_acceleration(provider_info)
+    summary["provider_info"] = provider_info
+    return summary
 
 
 @app.get("/metrics")

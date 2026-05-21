@@ -13,6 +13,7 @@ const computeOverall = document.getElementById("computeOverall");
 const computeModels = document.getElementById("computeModels");
 const computeMemory = document.getElementById("computeMemory");
 const computeJetson = document.getElementById("computeJetson");
+const computeAcceleration = document.getElementById("computeAcceleration");
 const computeAdvisor = document.getElementById("computeAdvisor");
 const trendFpsTops = document.getElementById("trendFpsTops");
 const trendMem = document.getElementById("trendMem");
@@ -36,6 +37,7 @@ const acknowledgedAlerts = new Set();
 let pendingBlob = null;
 const REQUIRED_ITEMS = ["helmet", "gloves", "coverall", "boots", "goggles"];
 let latestJetsonSnapshot = null;
+let latestAccelerationSnapshot = null;
 const TREND_LIMIT = 90;
 const trendState = {
   fps: [],
@@ -266,7 +268,7 @@ function renderComputePanel(metrics) {
     `Process VMS: ${procVms.toFixed(1)} MB\n` +
     `System: ${sysUsed.toFixed(1)} / ${sysTotal.toFixed(1)} MB (${sysPct.toFixed(1)}%)`;
 
-  renderPerformanceAdvisor(metrics, latestJetsonSnapshot);
+  renderPerformanceAdvisor(metrics, latestJetsonSnapshot, latestAccelerationSnapshot);
   pushTrendPoint(trendState.fps, Number(metrics.fps ?? 0));
   pushTrendPoint(trendState.tops, Number(metrics.estimated_tops_per_sec ?? 0));
   pushTrendPoint(trendState.memPct, Number(metrics.system_memory_utilization_pct ?? 0));
@@ -275,7 +277,7 @@ function renderComputePanel(metrics) {
   drawTrendChart(trendMem, [trendState.memPct, trendState.rssMb], ["#a06a00", "#13a6a6"], ["SYS MEM %", "RSS MB"]);
 }
 
-function renderPerformanceAdvisor(metrics, jetson) {
+function renderPerformanceAdvisor(metrics, jetson, acceleration) {
   const fps = Number(metrics.fps ?? 0);
   const util = Number(metrics.estimated_compute_utilization_pct ?? 0);
   const tops = Number(metrics.estimated_tops_per_sec ?? 0);
@@ -286,6 +288,8 @@ function renderPerformanceAdvisor(metrics, jetson) {
   const jetsonGpu = Number(jetson?.gpu_utilization_pct ?? 0);
   const jetsonPower = Number(jetson?.power_w ?? 0);
   const jetsonTemp = Number(jetson?.temperature_c ?? 0);
+  const gpuAccel = acceleration?.gpu_acceleration_enabled === true;
+  const cuda = acceleration?.cuda_enabled === true;
 
   let status = "Balanced";
   let bottleneck = "No major bottleneck detected.";
@@ -312,6 +316,7 @@ function renderPerformanceAdvisor(metrics, jetson) {
   computeAdvisor.textContent =
     `Status: ${status}\n` +
     `FPS: ${fps.toFixed(2)} | TOPS: ${tops.toFixed(3)} | Util: ${util.toFixed(1)}%\n` +
+    `GPU Accel: ${gpuAccel ? "ON" : "OFF"} | CUDA: ${cuda ? "ON" : "OFF"}\n` +
     `Jetson CPU: ${jetsonCpu.toFixed(1)}% | GPU: ${jetsonGpu.toFixed(1)}% | Power: ${jetsonPower.toFixed(2)}W | Temp: ${jetsonTemp.toFixed(1)}C\n` +
     `Dropped Frames: ${dropped}\n` +
     `Bottleneck: ${bottleneck}\n` +
@@ -570,6 +575,58 @@ function renderJetsonPanel(payload) {
     `Source: ${payload.source_url || "unknown"}`;
 }
 
+function _titleCaseModelKey(key) {
+  if (!key) {
+    return "Model";
+  }
+  return String(key).replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
+}
+
+function renderAccelerationPanel(payload) {
+  latestAccelerationSnapshot = payload || null;
+  if (!computeAcceleration) {
+    return;
+  }
+  if (!payload || typeof payload !== "object") {
+    computeAcceleration.textContent = "Acceleration API unavailable.";
+    return;
+  }
+
+  const cuda = payload.cuda_enabled === true;
+  const gpu = payload.gpu_acceleration_enabled === true;
+  const checked = Number(payload.checked_models ?? 0);
+  const models = payload.models || {};
+
+  const lines = [
+    `CUDA: ${cuda ? "ENABLED" : "DISABLED"}`,
+    `GPU Acceleration: ${gpu ? "ENABLED" : "DISABLED"}`,
+    `Checked models: ${checked}`,
+  ];
+  computeAcceleration.innerHTML = "";
+  const pre = document.createElement("div");
+  pre.className = "compute-text";
+  pre.textContent = lines.join("\n");
+  computeAcceleration.appendChild(pre);
+
+  const list = document.createElement("div");
+  list.className = "accel-list";
+
+  for (const [modelKey, info] of Object.entries(models)) {
+    const chip = document.createElement("div");
+    const isGpu = info?.gpu_accelerated === true;
+    const mode = String(info?.mode || "model").toLowerCase();
+    const cls = mode === "mock" ? "warn" : isGpu ? "ok" : "bad";
+    chip.className = `accel-chip ${cls}`;
+    const provider = String(info?.active_provider || "n/a");
+    const artifact = String(info?.artifact_format || "unknown");
+    const reason = String(info?.reason || "");
+    chip.textContent = `${_titleCaseModelKey(modelKey)}: ${isGpu ? "GPU/CUDA ON" : "GPU/CUDA OFF"} | provider=${provider} | artifact=${artifact}${reason ? ` | ${reason}` : ""}`;
+    list.appendChild(chip);
+  }
+
+  computeAcceleration.appendChild(list);
+}
+
 async function refreshJetsonPanel() {
   try {
     const resp = await fetch("/api/jetson/stats");
@@ -580,8 +637,20 @@ async function refreshJetsonPanel() {
   }
 }
 
+async function refreshAccelerationPanel() {
+  try {
+    const resp = await fetch("/api/runtime/acceleration");
+    const payload = resp.ok ? await resp.json() : {};
+    renderAccelerationPanel(payload);
+  } catch (err) {
+    renderAccelerationPanel(null);
+  }
+}
+
 connect();
 refreshBehaviorPanel();
 refreshJetsonPanel();
+refreshAccelerationPanel();
 setInterval(refreshBehaviorPanel, 5000);
 setInterval(refreshJetsonPanel, 5000);
+setInterval(refreshAccelerationPanel, 8000);
