@@ -139,6 +139,14 @@ class MonitoringPipeline:
         self.conflict_min_iou = float(conflict_cfg.get("min_iou", 0.05))
         self.conflict_ambiguity_margin = float(conflict_cfg.get("ambiguity_margin", 0.12))
         self.conflict_low_conf = float(conflict_cfg.get("low_conf_threshold", 0.40))
+        low_conf_esc_cfg = verifier_cfg.get("low_conf_escalation", {}) or {}
+        self.low_conf_escalation_enabled = bool(low_conf_esc_cfg.get("enabled", True))
+        self.low_conf_escalation_threshold = float(low_conf_esc_cfg.get("threshold", 0.60))
+        self.low_conf_escalation_items = set(str(x) for x in low_conf_esc_cfg.get("items", ["gloves"]))
+        self.low_conf_escalation_thresholds = {
+            str(k): float(v)
+            for k, v in dict(low_conf_esc_cfg.get("per_item_thresholds", {})).items()
+        }
         self.vlm_label_polarity: Dict[str, Dict[str, List[str]]] = {
             "helmet": {"positive": ["helmet"], "negative": []},
             "goggles": {"positive": ["goggles"], "negative": []},
@@ -514,7 +522,13 @@ class MonitoringPipeline:
         person_crop = self._crop_to_bbox(frame, person.bbox)
         item_crop = self._crop_for_item(frame, person, item)
         vctx, ambiguous = self._build_verifier_context(person, item, ppe_detections, person_crop, item_crop)
-        needs_verifier = base_classification == Classification.VIOLATION_TENTATIVE or ambiguous
+        low_conf_escalated = self._should_force_verifier_on_low_conf(
+            item=item,
+            base_classification=base_classification,
+            bind=bind,
+            positive_conf=vctx.positive_conf,
+        )
+        needs_verifier = base_classification == Classification.VIOLATION_TENTATIVE or ambiguous or low_conf_escalated
 
         if not needs_verifier:
             if base_classification == Classification.COMPLIANT:
@@ -578,6 +592,26 @@ class MonitoringPipeline:
             positive_conf=vctx.positive_conf,
             negative_conf=vctx.negative_conf,
         )
+
+    def _should_force_verifier_on_low_conf(
+        self,
+        *,
+        item: str,
+        base_classification: Classification,
+        bind,
+        positive_conf: float,
+    ) -> bool:
+        """Escalate low-confidence compliant detections to verifier for selected items."""
+        if not self.low_conf_escalation_enabled:
+            return False
+        if item not in self.low_conf_escalation_items:
+            return False
+        if base_classification != Classification.COMPLIANT:
+            return False
+        if bind is None or not getattr(bind, "bound", False):
+            return False
+        threshold = self.low_conf_escalation_thresholds.get(item, self.low_conf_escalation_threshold)
+        return float(positive_conf) < float(threshold)
 
     def _build_active_alerts(self) -> List[AlertPayload]:
         alerts: List[AlertPayload] = []

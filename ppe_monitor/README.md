@@ -80,6 +80,7 @@ All thresholds and behavior are in `config.yaml`.
   - `enforce`: override goggles to `INDETERMINATE` when face is not visible
   - `scrfd_model_path`: SCRFD ONNX model path
 - `verifier_cache.ttl_compliant_seconds|ttl_violation_seconds`: cache TTLs per verifier result
+- `verifier.low_conf_escalation.*`: force verifier checks for low-confidence compliant detections (default includes `gloves`)
 - `state_machine.window_size`: rolling window length
 - `state_machine.violation_threshold`: raise alert on this many violations in window
 - `state_machine.clear_threshold`: clear alert after this many consecutive compliant frames

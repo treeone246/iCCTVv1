@@ -47,6 +47,12 @@ verifier:
     min_iou: 0.05
     ambiguity_margin: 0.12
     low_conf_threshold: 0.40
+  low_conf_escalation:
+    enabled: true
+    threshold: 0.40
+    items: [gloves]
+    per_item_thresholds:
+      gloves: 0.40
   # Controls when positive/negative detector classes should escalate to VLM.
   label_polarity:
     helmet:
