@@ -192,8 +192,14 @@ prometheus:
 
 jetson_exporter:
   enabled: true
+  # mode:
+  # - external: read from separate exporter URL
+  # - local_jtop: read jtop directly in this app (uvicorn-only mode)
+  mode: "external"
   url: "http://127.0.0.1:9100/metrics"
   timeout_seconds: 1.5
+  refresh_seconds: 1.0
+  fallback_to_local_jtop: true
   # Optional overrides if your exporter uses different metric names.
   metric_map: {}
 

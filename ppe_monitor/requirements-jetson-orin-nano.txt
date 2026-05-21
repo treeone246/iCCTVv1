@@ -33,6 +33,7 @@ websockets==14.2
 ultralytics==8.4.48
 lap>=0.5.12
 prometheus-client==0.21.1
+jetson-stats>=4.2.0
 
 # ONNX Runtime for Jetson
 # If your Jetson index serves onnxruntime-gpu, this pin should work directly.

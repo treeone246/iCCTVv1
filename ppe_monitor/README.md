@@ -91,8 +91,11 @@ All thresholds and behavior are in `config.yaml`.
 - `prometheus.enabled`: enable `/metrics` Prometheus export endpoint
 - `jetson_exporter.*`: optional bridge to jtop-based Jetson Prometheus exporter
   - `enabled`: enable bridge
+  - `mode`: `external` or `local_jtop`
   - `url`: exporter metrics URL (default `http://127.0.0.1:9100/metrics`)
   - `timeout_seconds`: fetch timeout
+  - `refresh_seconds`: cache interval for Jetson stats polling
+  - `fallback_to_local_jtop`: when `external` fails, try direct local jtop
   - `metric_map`: optional metric-name overrides per normalized field
 
 ### Ollama VLM Verifier (Qwen2.5-VL 3B)
@@ -186,6 +189,30 @@ Jetson jtop exporter integration modes:
    - Use included dashboard panels for `ppe_monitor_jetson_*`.
 2. Own dashboard mode:
    - Web UI fetches `GET /api/jetson/stats` and shows a live Jetson card in **Computation Performance**.
+3. Uvicorn-only mode (no separate exporter process):
+   - Set:
+     ```yaml
+     jetson_exporter:
+       enabled: true
+       mode: "local_jtop"
+       refresh_seconds: 1.0
+     ```
+   - Install `jetson-stats` in your venv.
+   - Run only `uvicorn app.main:app --reload`.
+   - The app reads jtop directly for `/api/jetson/stats` and `/metrics`.
+
+If you do not already have a Jetson exporter process, you can run the included script:
+
+```bash
+pip install -U jetson-stats prometheus-client
+python monitoring/jetson_jtop_exporter.py --host 0.0.0.0 --port 9100 --interval 1
+```
+
+Then verify:
+
+```bash
+curl -s http://127.0.0.1:9100/metrics | head
+```
 
 Jetson calibration preset:
 
