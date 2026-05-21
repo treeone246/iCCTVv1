@@ -2,9 +2,11 @@
 gpu-id=0
 net-scale-factor=0.003921568627
 model-color-format=0
-onnx-file=models/best2.onnx
-model-engine-file=models/best2.engine
-labelfile-path=configs/deepstream/labels_ppe.txt
+
+onnx-file=/home/gabrieljetson/Projects/cctv-pdsi/iCCTVv1/ppe_monitor/models/best2.onnx
+model-engine-file=/home/gabrieljetson/Projects/cctv-pdsi/iCCTVv1/ppe_monitor/models/best2.engine
+labelfile-path=/home/gabrieljetson/Projects/cctv-pdsi/iCCTVv1/ppe_monitor/configs/deepstream/labels_ppe.txt
+
 batch-size=1
 network-mode=2
 num-detected-classes=9
@@ -16,14 +18,9 @@ cluster-mode=2
 maintain-aspect-ratio=1
 symmetric-padding=1
 
-# Most YOLO engines require a custom bbox parser in DeepStream.
-# If parse errors occur (e.g. "Could not find output coverage layer"),
-# set parse-func=0 and point to a valid custom parser library:
-# parse-func=0
-# custom-lib-path=/absolute/path/to/libnvdsinfer_custom_impl_Yolo.so
-# parse-bbox-func-name=NvDsInferParseYolo
-# Optional if engine build is delegated to custom lib:
-# engine-create-func-name=NvDsInferYoloCudaEngineGet
+parse-func=0
+custom-lib-path=/home/gabrieljetson/Projects/DeepStream-Yolo/nvdsinfer_custom_impl_Yolo/libnvdsinfer_custom_impl_Yolo.so
+parse-bbox-func-name=NvDsInferParseYoloCuda
 
 [class-attrs-all]
 pre-cluster-threshold=0.25
