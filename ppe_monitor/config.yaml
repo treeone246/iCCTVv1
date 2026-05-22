@@ -125,7 +125,7 @@ verifier:
 
 adaptive_scheduler:
   # Reduce detector load by reusing PPE detections between frames.
-  enabled: false
+  enabled: true
   # Run full PPE detection every N frames.
   ppe_interval_frames: 2
   # Hard cap to avoid stale reuse.
@@ -135,7 +135,7 @@ adaptive_scheduler:
 
 async_verifier:
   # Offload verifier crop checks to background worker so frame loop is not blocked.
-  enabled: false
+  enabled: true
   queue_max: 512
   # If queue is full, keep frame loop non-blocking and emit queue_full reason.
   drop_if_full: true
