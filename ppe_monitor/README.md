@@ -1,700 +1,852 @@
-# PPE Compliance Monitoring Prototype
+# PPE Compliance Monitoring (`ppe_monitor`)
 
-Real-time PPE compliance monitoring using a three-model ONNX cascade:
+## 1. Project overview
 
-- Pose + tracking: `models/yolo26n-pose.onnx`
-- PPE detection: `models/best2.onnx`
-- Verifier: `models/yoloe-ppe.onnx`
+`ppe_monitor` is a real-time PPE compliance monitoring system for industrial safety video streams. It ingests webcam/file/RTSP video, tracks people, evaluates required PPE per person, applies anti-spam state logic, and publishes live results to a FastAPI WebSocket dashboard.
 
-The system uses tracked persons, keypoint-aware PPE association, verifier cache TTLs, and a per-item alert state machine with hysteresis.
+Primary users are operations/safety teams who need live compliance visibility, alert evidence, and machine-readable event logs for downstream analysis.
 
-## Latest Features (May 2026)
+## 2. System architecture
 
-- Added a non-blocking per-person event stream at `outputs/detection_events.jsonl`.
-  - Source: `app/pipeline.py` + `app/event_stream.py`
-  - Trigger policy: raw-status change, stabilized-status change, state-machine stage change, or heartbeat.
-- Added a background AI behavior intelligence agent package:
-  - `app/ai_behavior_agent/` (reader, prompting, Ollama client, schemas, storage, memory reinforcer, runner CLI)
-  - Uses Ollama `qwen3:4b` with `think: false` and strict JSON parsing.
-  - Runs as standalone by default, optional background service inside FastAPI when enabled.
-- Added read-only APIs:
-  - `GET /api/behavior-agent/latest`
-  - `GET /api/behavior-agent/history`
-  - `GET /api/behavior-agent/memory`
-- Added dashboard panel: **AI Behavior Intelligence**.
-- Added periodic runtime performance logging to `outputs/performance_logs.jsonl`.
-  - Source: `app/performance_logger.py`
-  - Includes FPS, violations, FLOP/s, TOPS, model infer rates, memory, and Jetson stats (if enabled).
-- Added runtime acceleration visibility in dashboard:
-  - Per-model CUDA/GPU status with glow indicators (green=enabled, red=disabled).
-  - API: `GET /api/runtime/acceleration`.
-- Added optional DeepStream backend foundation (Phase 1):
-  - runtime backend selector: `runtime.backend` (`python` or `deepstream`)
-  - DeepStream module: `app/deepstream/`
-  - metadata adapter with pyds-free dataclasses for testability
-  - DeepStream config templates under `configs/deepstream/`
-  - Jetson setup guide: `docs/deepstream_jetson_setup.md`
-  - Phase 0 baseline template: `docs/perf_baseline_python.md`
+### Video source (RTSP/file ingest)
 
-Detailed feature notes: `BEHAVIOR_AGENT.md`.
+- Python backend uses [`app/video_source.py`](app/video_source.py): OpenCV `VideoCapture`, optional frame dropping (`drop_grab_limit`), supports webcam index, file path, or RTSP URL.
+- DeepStream backend uses [`app/deepstream/deepstream_pipeline.py`](app/deepstream/deepstream_pipeline.py): `uridecodebin + nvstreammux + nvinfer + nvtracker + appsink`.
 
-## Quick Start
+### Pose detection (`yolo26n-pose`)
+
+- Implemented in [`app/pose_tracker.py`](app/pose_tracker.py) (`YOLOPoseTracker`).
+- Uses Ultralytics `.track(..., tracker="bytetrack.yaml")`.
+- Produces tracked persons with COCO keypoints.
+
+### PPE detection (`best2`)
+
+- Implemented in [`app/ppe_detector.py`](app/ppe_detector.py) (`YOLOPPEDetector`).
+- Primary detector labels are canonicalized through alias mapping (`ppe_label_aliases`).
+- In startup logic, PPE model path is forced to `best2.onnx`/`best2.engine` when available for consistency (see [`app/startup_check.py`](app/startup_check.py)).
+
+### Pose<->PPE association engine
+
+- Implemented in [`app/association.py`](app/association.py).
+- Rules are per item:
+  - `helmet/goggles/gloves/boots`: distance from expected keypoints.
+  - `coverall`: IoU with torso box from shoulder/hip keypoints.
+- Handles held-items logic (`held_distance_ratio`) to flag "held but not worn".
+
+### YOLOE verifier + verifier cache
+
+- Verifier interface in [`app/verifier.py`](app/verifier.py).
+- `YOLOEVerifier` is used for crop verification.
+- `VerifierCache` in [`app/cache.py`](app/cache.py) stores verdicts by `(person_id, item)` with separate TTLs for compliant/violation/indeterminate.
+
+### Ollama VLM verifier (`qwen2.5vl:3b`)
+
+- Hybrid verifier mode is built in `load_runtime_components()` (`verifier.backend: ollama_hybrid`).
+- Ollama VLM is trigger-driven (not unconditional per-frame): it is called only on ambiguity paths/low-confidence escalation, not for every person-item pair.
+- Ambiguity/trigger rules are in [`app/pipeline.py`](app/pipeline.py) and [`app/verifier.py`](app/verifier.py).
+
+### Compliance state machine with hysteresis
+
+- Implemented in [`app/state_machine.py`](app/state_machine.py).
+- Per-person, per-item rolling vote window.
+- Internal stages: `CLEAR`, `VIOLATION_CANDIDATE`, `VIOLATION_CONFIRMED`.
+- Emits transitions: `ALERT_RAISED`, `ALERT_CLEARED`.
+- Includes confirm timer and alert cooldown.
+
+### Memory / anti-spam logic
+
+- Display-state stabilization + evidence memory in [`app/pipeline.py`](app/pipeline.py):
+  - `status_stability.*`
+  - `compliance_memory.*`
+- Optional separate memory engine in [`app/ppe_memory.py`](app/ppe_memory.py), used by [`live_inference_window.py`](live_inference_window.py) with `--enable-memory`.
+
+### Alert generation
+
+- Active alerts are built from state machine active states in `_build_active_alerts()` in [`app/pipeline.py`](app/pipeline.py).
+- Alert payload includes evidence JPEG (base64) when available.
+
+### Event stream writer (`detection_events.jsonl`)
+
+- Implemented in [`app/event_stream.py`](app/event_stream.py).
+- Asynchronous queue + background writer thread (non-blocking to inference loop).
+- Emits `ppe_observation` records on raw/stable/state transitions or heartbeat.
+
+### Behavior intelligence agent (`qwen3:4b` via Ollama)
+
+- Implemented in [`app/ai_behavior_agent/`](app/ai_behavior_agent).
+- Reads recent events from `outputs/detection_events.jsonl`, runs periodic analysis, writes output files under `outputs/behavior_agent/`.
+- Can run:
+  - standalone CLI (`python -m app.ai_behavior_agent.agent ...`), or
+  - optional background service in FastAPI (`behavior_agent.enabled: true`).
+
+### FastAPI app + WebSocket dashboard
+
+- Backend entrypoint: [`app/main.py`](app/main.py).
+- WebSocket stream: `/ws/stream`.
+- Dashboard static UI: [`static/index.html`](static/index.html), [`static/dashboard.js`](static/dashboard.js), [`static/styles.css`](static/styles.css).
+- Exposes runtime/behavior/jetson/prometheus APIs.
+
+### `live_inference_window.py` (OpenCV display)
+
+- Local OpenCV viewer for direct inference visualization, without browser.
+- Supports image/video sources, overlays, optional memory mode, optional status dashboard window.
+
+### Performance logging
+
+- Implemented in [`app/performance_logger.py`](app/performance_logger.py).
+- Periodic async JSONL snapshots to `outputs/performance_logs.jsonl`.
+- Includes fps, inference rates, estimated FLOP/s/TOPS, memory, optional Jetson stats, and DeepStream per-camera FPS when provided.
+
+## 3. Pipeline diagram
+
+```mermaid
+flowchart TD
+    A[Video ingest<br/>VideoSource or DeepStream bundle] --> B[MonitoringPipeline.process_frame]
+
+    B --> C[Pose tracking<br/>YOLOPoseTracker]
+    B --> D[PPE detections<br/>BEST2 primary + optional YOLOE aux]
+
+    C --> E[Per person x required PPE item]
+    D --> E
+
+    E --> F[AssociationEngine<br/>COMPLIANT / VIOLATION_TENTATIVE / VIOLATION / INDETERMINATE]
+
+    F --> G{Verifier needed?<br/>VIOLATION_TENTATIVE or ambiguity or low-conf escalation}
+    G -->|No| H[Use association result]
+    G -->|Yes| I{VerifierCache hit?}
+    I -->|Yes| J[Use cached verdict]
+    I -->|No| K[Crop ROI]
+    K --> L[YOLOE verifier]
+    L --> M{Ambiguous conflict only}
+    M -->|No| N[Return YOLOE verdict]
+    M -->|Yes| O[Ollama VLM qwen2.5vl:3b]
+    O --> P[Cache verdict with TTL]
+    N --> P
+    J --> Q[Final item classification]
+    H --> Q
+    P --> Q
+
+    Q --> R[State machine<br/>CLEAR/CANDIDATE/CONFIRMED]
+    R --> S[Active alerts + evidence]
+    Q --> T[Display stability + memory smoothing]
+    T --> U[Frame payload metrics/person states]
+    S --> U
+
+    U --> V[WebSocket dashboard JSON]
+    U --> W[Performance logger JSONL]
+
+    U --> X[EventStreamWriter<br/>outputs/detection_events.jsonl]
+    X --> Y[BehaviorAgentRunner<br/>interval polling]
+    Y --> Z[outputs/behavior_agent/*.json<br/>and person_behavior_memory.json]
+```
+
+## 4. State machine diagram
+
+The following diagram is based on actual stage names and transitions in [`app/state_machine.py`](app/state_machine.py).
+
+```mermaid
+stateDiagram-v2
+    [*] --> CLEAR
+
+    CLEAR --> VIOLATION_CANDIDATE: violation_votes >= violation_threshold
+    VIOLATION_CANDIDATE --> VIOLATION_CONFIRMED: elapsed >= confirm_seconds
+    VIOLATION_CANDIDATE --> CLEAR: COMPLIANT frame
+
+    VIOLATION_CONFIRMED --> CLEAR: COMPLIANT frame (clear_threshold reached)
+
+    note right of VIOLATION_CONFIRMED
+      alert_status is ACTIVE
+      ALERT_RAISED is emitted only if
+      cooldown_seconds has elapsed
+    end note
+
+    note right of CLEAR
+      alert_status is CLEARED
+      COMPLIANT always resets candidate/confirmed timers
+      ALERT_CLEARED emitted when previously ACTIVE
+    end note
+```
+
+## 5. Installation
+
+### Python and venv
+
+Repository dependencies target Python 3.10 on Jetson (`requirements-jetson-orin-nano.txt`).
 
 ```bash
-python3 -m pip install --upgrade pip setuptools wheel
-python3 -m pip install -r requirements-jetson-orin-nano.txt
+cd ppe_monitor
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip setuptools wheel
+pip install -r requirements-jetson-orin-nano.txt
 ```
 
-For Jetson Orin Nano Super, use `requirements-jetson-orin-nano.txt`.
+### Required model files
 
-Drop models into `models/`:
+Place models under `ppe_monitor/models/`.
 
-- `models/yolo26n-pose.onnx`
-- `models/best2.onnx`
-- `models/yoloe-ppe.onnx`
+Default config expects:
 
-Run:
+```text
+models/yolo26n-pose.onnx
+models/best2.onnx
+models/yoloe-ppeRev2.onnx
+models/det_2.5g.onnx        # if face_gate.enabled = true
+```
+
+If your filenames differ (for example `yoloe-ppe.onnx`), update `config.yaml` accordingly.
+
+### Ollama setup
 
 ```bash
-uvicorn app.main:app --reload
+ollama serve
+ollama pull qwen2.5vl:3b
+ollama pull qwen3:4b
 ```
 
-Open dashboard at `http://localhost:8000`.
+### Environment variables
 
-## Model Preparation
+No mandatory environment variables are required for the Python backend.
 
-- Export ONNX with opset 17+ when possible.
-- Use `dynamic=True` when you hit shape compatibility issues.
-- Keep task settings aligned:
-  - pose model with `task='pose'`
-  - PPE/verifier models with `task='detect'`
-
-If preprocessing errors occur, inspect input/output tensor names and shapes with Netron and compare with startup logs.
-
-## Configuration
-
-All thresholds and behavior are in `config.yaml`.
-
-- `video.source`: webcam index, file path, or RTSP URL
-- `video.target_fps`: desired streaming cadence
-- `video.drop_grab_limit`: max extra `.grab()` operations to catch up when slow
-- `runtime.backend`: `python` (default) or `deepstream`
-- `deepstream.*`: DeepStream runtime settings
-  - `source_uris` (Phase 2 multi-camera list), `source_uri` fallback for single source
-  - `camera_ids` (per-source camera ids), `camera_id` fallback base id
-  - `engine_path`, `onnx_fallback_path`, `labels_path`, `gie_config`, `tracker_config`
-  - `batch_size`, `width`, `height`, `appsink_max_buffers`
-  - `emit_jpeg`, `jpeg_quality`, `target_fps`
-- `models.pose|ppe|verifier`: ONNX paths
-- `models.allow_mock_models`: if true, missing models are replaced with mocks
-- `inference.device`: `auto`, `cuda`, or `cpu`
-- `inference.conf_threshold_pose|ppe|verifier`: score thresholds per model
-- `inference.keypoint_conf_floor`: below this keypoint confidence => `INDETERMINATE`
-- `inference.imgsz`: inference image size
-- `association.*`: PPE binding distances, keypoint sets, coverall IoU threshold, held-distance ratio
-  - `association.goggles_face_gate_enabled`: require face visibility before goggles can be judged compliant/non-compliant
-  - `association.goggles_face_min_points`: minimum visible face keypoints for goggles assessment
-- `face_gate.*`: optional SCRFD face-visibility gate for goggles
-  - `enabled`: enable SCRFD face observations
-  - `shadow_mode`: log-only, no decision override
-  - `enforce`: override goggles to `INDETERMINATE` when face is not visible
-  - `scrfd_model_path`: SCRFD ONNX model path
-- `verifier_cache.ttl_compliant_seconds|ttl_violation_seconds`: cache TTLs per verifier result
-- `verifier.low_conf_escalation.*`: force verifier checks for low-confidence compliant detections (default includes `gloves`)
-- `state_machine.window_size`: rolling window length
-- `state_machine.violation_threshold`: raise alert on this many violations in window
-- `state_machine.clear_threshold`: clear alert after this many consecutive compliant frames
-- `event_stream.*`: non-blocking richer per-person observation JSONL settings
-- `behavior_agent.*`: background behavior intelligence agent settings (`enabled` defaults to `false`)
-- `required_ppe`: PPE items to enforce
-- `dashboard.jpeg_quality`: JPEG quality used for stream frames
-- `dashboard.metrics_window_minutes`: time window used for dashboard aggregate metrics
-- `compute_monitor.*`: estimated runtime compute-power monitor (GFLOPS/s)
-  - `compute_monitor.enabled`: enable/disable compute estimation in metrics/dashboard
-  - `pose_gflops_per_infer|ppe_gflops_per_infer|verifier_aux_gflops_per_infer|verifier_crop_gflops_per_infer|verifier_ollama_gflops_per_infer`: per-model estimate inputs
-  - `device_peak_gflops`: optional hardware peak for utilization percentage
-- `memory_monitor.enabled`: process/system memory monitoring
-- `performance_logging.*`: periodic JSONL performance snapshots for offline analysis
-  - `enabled`: enable/disable performance log writer
-  - `path`: output JSONL file path (default `outputs/performance_logs.jsonl`)
-  - `interval_seconds`: snapshot interval
-  - `include_jetson`: include normalized Jetson stats payload
-  - `include_raw_metrics`: include full raw `metrics` object in each record
-- `prometheus.enabled`: enable `/metrics` Prometheus export endpoint
-- `jetson_exporter.*`: optional bridge to jtop-based Jetson Prometheus exporter
-  - `enabled`: enable bridge
-  - `mode`: `external` or `local_jtop`
-  - `url`: exporter metrics URL (default `http://127.0.0.1:9100/metrics`)
-  - `timeout_seconds`: fetch timeout
-  - `refresh_seconds`: cache interval for Jetson stats polling
-  - `fallback_to_local_jtop`: when `external` fails, try direct local jtop
-  - `metric_map`: optional metric-name overrides per normalized field
-
-### Ollama VLM Verifier (Qwen2.5-VL 3B)
-
-The verifier can run in hybrid mode:
-
-- YOLOE verifier model stays the fast path.
-- Ollama VLM is called only on ambiguous positive-vs-negative detections
-  (for example `boots` vs `no_boots`, `gloves` vs `no_gloves`).
-
-Config keys:
-
-- `verifier.backend: ollama_hybrid`
-- `verifier.ollama.host` (default `http://127.0.0.1:11434`)
-- `verifier.ollama.model` (default `qwen2.5vl:3b`)
-- `verifier.conflict_resolver.*` for ambiguity thresholds
-- `verifier.label_polarity.*` maps positive/negative detector classes per item
-
-The pipeline converts uncertain VLM answers to `INDETERMINATE`, which reduces
-dashboard alert spam by design due to state-machine hysteresis.
-
-### Compute Power Monitoring (Estimated FLOPS)
-
-The dashboard now reports estimated compute load from active inference calls:
-
-- `estimated_flops_per_sec` (FLOP/s)
-- `estimated_gflops_per_sec`
-- `estimated_tflops_per_sec`
-- `estimated_tops_per_sec`
-- `estimated_compute_utilization_pct` (when `device_peak_gflops > 0`)
-
-Important: this is an estimate derived from configured per-model GFLOPs and observed calls/sec.
-It is not a hardware counter from GPU performance registers.
-
-Model coverage includes:
-
-- pose tracker model
-- PPE primary model (`best2`)
-- verifier auxiliary full-frame detector (`yoloe_aux`)
-- verifier crop model calls
-- verifier Ollama calls (if a per-call estimate is configured)
-
-The dashboard also includes a dedicated **Computation Performance** panel with:
-
-- overall FLOP/s, GFLOP/s, TFLOP/s
-- per-model FLOP/s breakdown
-- process RSS/VMS memory and system memory usage
-
-### DeepStream Backend (Phase 1 + Phase 2 Prep)
-
-You can keep default Python mode:
-
-```yaml
-runtime:
-  backend: "python"
-```
-
-Or enable DeepStream mode:
-
-```yaml
-runtime:
-  backend: "deepstream"
-deepstream:
-  enabled: true
-  engine_path: "models/best2.engine"
-```
-
-Multi-camera example:
-
-```yaml
-runtime:
-  backend: "deepstream"
-deepstream:
-  enabled: true
-  source_uris:
-    - "rtsp://user:pass@cam-a/stream1"
-    - "rtsp://user:pass@cam-b/stream1"
-  camera_ids: ["rig_floor_cam_01", "rig_floor_cam_02"]
-  batch_size: 2
-  engine_path: "models/best2.engine"
-```
-
-Run:
+DeepStream deployments may require environment setup depending on device image:
 
 ```bash
+# Example: expose DeepStream plugins when needed
+export GST_PLUGIN_PATH=/opt/nvidia/deepstream/deepstream/lib/gst-plugins:${GST_PLUGIN_PATH}
+
+# Example: used when compiling external DeepStream-Yolo parser
+export CUDA_VER=12.6
+```
+
+## 6. Configuration (`config.yaml`)
+
+All keys below are current defaults from [`config.yaml`](config.yaml).
+
+### Video source and runtime backend
+
+| Key | Default | Meaning |
+|---|---|---|
+| `video.source` | `videos/simulationTest2.mp4` | Webcam index, file path, or RTSP URI for Python backend. |
+| `video.target_fps` | `20` | Target stream pacing. |
+| `video.drop_grab_limit` | `3` | Max extra `.grab()` calls to catch up when lagging. |
+| `runtime.backend` | `python` | Runtime backend: `python` or `deepstream`. |
+
+### DeepStream group
+
+| Key | Default |
+|---|---|
+| `deepstream.enabled` | `false` |
+| `deepstream.source_uris` | `[]` |
+| `deepstream.camera_ids` | `[]` |
+| `deepstream.source_uri` | `""` |
+| `deepstream.onnx_fallback_path` | `models/best2.onnx` |
+| `deepstream.labels_path` | `configs/deepstream/labels_ppe.txt` |
+| `deepstream.batch_size` | `1` |
+| `deepstream.width` | `1280` |
+| `deepstream.height` | `720` |
+| `deepstream.live_source` | `true` |
+| `deepstream.gie_config` | `configs/deepstream/config_infer_primary_yolo.txt` |
+| `deepstream.tracker_config` | `configs/deepstream/config_tracker_NvDCF.yml` |
+| `deepstream.tracker_ll_lib_file` | `/opt/nvidia/deepstream/deepstream/lib/libnvds_nvmultiobjecttracker.so` |
+| `deepstream.engine_path` | `models/best2.engine` |
+| `deepstream.person_classes` | `[person]` |
+| `deepstream.label_map` | `{}` |
+| `deepstream.output_metadata_topic` | `frame_payload` |
+| `deepstream.enable_osd` | `false` |
+| `deepstream.enable_display` | `false` |
+| `deepstream.drop_frame_interval` | `0` |
+| `deepstream.target_fps` | `30` |
+| `deepstream.camera_id` | `rig_floor_cam_01` |
+| `deepstream.emit_jpeg` | `true` |
+| `deepstream.jpeg_quality` | `75` |
+| `deepstream.jpeg_interval` | `1` |
+| `deepstream.appsink_max_buffers` | `4` |
+
+Meaning summary:
+- If `source_uris` is non-empty, it is used (multi-camera).
+- Otherwise single source fallback is `source_uri` then `video.source`.
+- Runtime rewrites GIE config to absolute `engine/onnx/label` paths.
+
+### Model paths and inference thresholds
+
+| Key | Default | Meaning |
+|---|---|---|
+| `models.pose` | `models/yolo26n-pose.onnx` | Pose tracker model. |
+| `models.ppe` | `models/best2.onnx` | Primary PPE detector model. |
+| `models.verifier` | `models/yoloe-ppeRev2.onnx` | Verifier model. |
+| `models.verifier_task` | `segment` | Ultralytics task hint for verifier model load. |
+| `models.allow_mock_models` | `true` | Use mock components if model file missing. |
+| `inference.device` | `auto` | Provider preference (`auto/cuda/cpu`). |
+| `inference.conf_threshold_pose` | `0.40` | Pose confidence threshold. |
+| `inference.conf_threshold_ppe` | `0.22` | PPE detection confidence threshold. |
+| `inference.conf_threshold_verifier` | `0.45` | Verifier confidence threshold. |
+| `inference.keypoint_conf_floor` | `0.40` | Global keypoint confidence floor. |
+| `inference.imgsz` | `640` | Ultralytics inference image size. |
+
+### PPE label aliases
+
+`ppe_label_aliases.*` maps detector label variants to canonical classes used by the pipeline.
+Defaults include aliases for:
+- `helmet`, `goggles`, `gloves`, `boots`, `coverall`, `no_gloves`, `no_boots`, `harness`.
+
+### Detector ensemble and verifier trigger logic
+
+| Key | Default | Meaning |
+|---|---|---|
+| `detector_ensemble.enabled` | `true` | Enable auxiliary full-frame YOLOE detections. |
+| `detector_ensemble.fusion_mode` | `parallel` | Merge strategy (`parallel` or NMS merge). |
+| `detector_ensemble.yoloe_conf_threshold` | `0.20` | Confidence for auxiliary YOLOE detector path. |
+| `detector_ensemble.iou_nms_threshold` | `0.50` | NMS IoU for merge mode. |
+| `detector_ensemble.allowed_items` | `[helmet, goggles, gloves, boots, coverall, no_gloves, no_boots, harness]` | Labels accepted from aux detector. |
+| `verifier.backend` | `ollama_hybrid` | Verifier mode. |
+| `verifier.enable_vlm` | `true` | Enable Ollama escalation in hybrid verifier. |
+| `verifier.ollama.host` | `http://127.0.0.1:11434` | Ollama host. |
+| `verifier.ollama.model` | `qwen2.5vl:3b` | VLM model for conflict resolution. |
+| `verifier.ollama.timeout_seconds` | `8.0` | Ollama request timeout. |
+| `verifier.ollama.temperature` | `0.0` | Ollama temperature. |
+| `verifier.conflict_resolver.min_iou` | `0.05` | Minimum overlap for conflict analysis. |
+| `verifier.conflict_resolver.ambiguity_margin` | `0.12` | Positive/negative score margin for ambiguity. |
+| `verifier.conflict_resolver.low_conf_threshold` | `0.40` | Low confidence threshold in conflict logic. |
+| `verifier.low_conf_escalation.enabled` | `true` | Force verifier for low-confidence compliant detections. |
+| `verifier.low_conf_escalation.threshold` | `0.40` | Default low-confidence escalation threshold. |
+| `verifier.low_conf_escalation.items` | `[gloves]` | Items using low-confidence escalation. |
+| `verifier.low_conf_escalation.per_item_thresholds.gloves` | `0.40` | Item-specific threshold. |
+| `verifier.label_polarity.*` | per-item positive/negative class map | Defines conflict pairs (for example `gloves` vs `no_gloves`). |
+| `verifier.vlm_labels.*` | per-item prompt strings | Human-readable labels for VLM prompt. |
+
+### Association and ROI
+
+| Key | Default |
+|---|---|
+| `association.keypoint_conf_floor` | `0.40` |
+| `association.held_distance_ratio` | `1.2` |
+| `association.held_items` | `[helmet, goggles, gloves]` |
+| `association.goggles_face_gate_enabled` | `true` |
+| `association.goggles_face_min_points` | `2` |
+| `association.helmet_keypoints` | `[nose, left_eye, right_eye]` |
+| `association.goggles_keypoints` | `[left_eye, right_eye]` |
+| `association.gloves_keypoints` | `[left_wrist, right_wrist]` |
+| `association.boots_keypoints` | `[left_ankle, right_ankle]` |
+| `association.coverall_keypoints` | `[left_shoulder, right_shoulder, left_hip, right_hip]` |
+| `association.helmet_distance_px` | `90` |
+| `association.goggles_distance_px` | `85` |
+| `association.gloves_distance_px` | `110` |
+| `association.boots_distance_px` | `120` |
+| `association.coverall_iou_threshold` | `0.05` |
+| `verifier_roi.keypoint_conf_floor` | `0.40` |
+| `verifier_roi.min_side_px` | `96` |
+| `verifier_roi.padding_scale.helmet` | `2.0` |
+| `verifier_roi.padding_scale.goggles` | `1.8` |
+| `verifier_roi.padding_scale.gloves` | `1.6` |
+| `verifier_roi.padding_scale.boots` | `1.6` |
+| `verifier_roi.padding_scale.coverall` | `1.25` |
+
+### State machine and stability
+
+| Key | Default | Meaning |
+|---|---|---|
+| `state_machine.window_size` | `30` | Rolling vote window size. |
+| `state_machine.violation_threshold` | `40` | Violation-like votes needed for candidate stage. |
+| `state_machine.clear_threshold` | `1` | Compliant streak needed to clear active alert. |
+| `state_machine.confirm_seconds` | `2.0` | Candidate duration required before confirmed stage. |
+| `state_machine.cooldown_seconds` | `60.0` | Cooldown between repeated `ALERT_RAISED`. |
+| `status_stability.compliant_enter_frames` | `2` | Frames required to enter compliant display state. |
+| `status_stability.compliant_clear_violation_frames` | `3` | Frames required to clear violation display state. |
+| `status_stability.violation_enter_frames` | `4` | Frames required to enter violation display state. |
+| `status_stability.indeterminate_enter_frames` | `8` | Frames required to enter indeterminate display state. |
+| `status_stability.per_item.helmet.violation_enter_frames` | `7` | Item override. |
+| `status_stability.per_item.helmet.indeterminate_enter_frames` | `12` | Item override. |
+| `status_stability.per_item.coverall.violation_enter_frames` | `7` | Item override. |
+| `status_stability.per_item.coverall.indeterminate_enter_frames` | `12` | Item override. |
+
+### Compliance memory smoothing
+
+| Key | Default |
+|---|---|
+| `compliance_memory.assume_compliant` | `true` |
+| `compliance_memory.prior_compliant_score` | `5.0` |
+| `compliance_memory.decay` | `0.96` |
+| `compliance_memory.positive_gain` | `1.0` |
+| `compliance_memory.negative_gain` | `1.25` |
+| `compliance_memory.compliant_bonus` | `1.0` |
+| `compliance_memory.violation_penalty` | `1.2` |
+| `compliance_memory.indeterminate_decay` | `0.985` |
+| `compliance_memory.ok_threshold` | `4.0` |
+| `compliance_memory.bad_threshold` | `-4.0` |
+| `compliance_memory.dominance_ratio` | `1.15` |
+| `compliance_memory.dominance_min_negative` | `2.5` |
+| `compliance_memory.max_abs_score` | `20.0` |
+
+### Required PPE and dashboard
+
+| Key | Default |
+|---|---|
+| `required_ppe` | `[helmet, goggles, gloves, boots, coverall]` |
+| `dashboard.jpeg_quality` | `75` |
+| `dashboard.metrics_window_minutes` | `60` |
+
+### Compute, memory, and logging
+
+| Key | Default |
+|---|---|
+| `compute_monitor.enabled` | `true` |
+| `compute_monitor.pose_gflops_per_infer` | `8.5` |
+| `compute_monitor.ppe_gflops_per_infer` | `20.0` |
+| `compute_monitor.verifier_aux_gflops_per_infer` | `20.0` |
+| `compute_monitor.verifier_crop_gflops_per_infer` | `20.0` |
+| `compute_monitor.verifier_ollama_gflops_per_infer` | `0.0` |
+| `compute_monitor.device_peak_gflops` | `8500.0` |
+| `memory_monitor.enabled` | `true` |
+| `performance_logging.enabled` | `true` |
+| `performance_logging.path` | `outputs/performance_logs.jsonl` |
+| `performance_logging.interval_seconds` | `1.0` |
+| `performance_logging.queue_max` | `5000` |
+| `performance_logging.include_jetson` | `true` |
+| `performance_logging.include_raw_metrics` | `true` |
+| `performance_logging.camera_id` | `rig_floor_cam_01` |
+
+### Prometheus and Jetson bridge
+
+| Key | Default |
+|---|---|
+| `prometheus.enabled` | `true` |
+| `jetson_exporter.enabled` | `true` |
+| `jetson_exporter.mode` | `local_jtop` |
+| `jetson_exporter.url` | `http://127.0.0.1:9100/metrics` |
+| `jetson_exporter.timeout_seconds` | `1.5` |
+| `jetson_exporter.refresh_seconds` | `1.0` |
+| `jetson_exporter.fallback_to_local_jtop` | `true` |
+| `jetson_exporter.metric_map` | `{}` |
+
+### Face gate, event stream, behavior agent, logging
+
+| Key | Default |
+|---|---|
+| `face_gate.enabled` | `true` |
+| `face_gate.target_item` | `goggles` |
+| `face_gate.shadow_mode` | `true` |
+| `face_gate.enforce` | `false` |
+| `face_gate.log_enabled` | `true` |
+| `face_gate.log_every_n_frames` | `10` |
+| `face_gate.scrfd_model_path` | `models/det_2.5g.onnx` |
+| `face_gate.input_size` | `640` |
+| `face_gate.score_threshold` | `0.35` |
+| `face_gate.min_confidence` | `0.45` |
+| `face_gate.min_face_area_ratio` | `0.02` |
+| `face_gate.nms_iou_threshold` | `0.40` |
+| `face_gate.cache_seconds` | `0.2` |
+| `event_stream.enabled` | `true` |
+| `event_stream.path` | `outputs/detection_events.jsonl` |
+| `event_stream.camera_id` | `rig_floor_cam_01` |
+| `event_stream.heartbeat_seconds` | `1.0` |
+| `event_stream.emit_on_raw_change` | `true` |
+| `event_stream.emit_on_stable_change` | `true` |
+| `event_stream.emit_on_sm_transition` | `true` |
+| `event_stream.queue_max` | `2000` |
+| `behavior_agent.enabled` | `false` |
+| `behavior_agent.interval_seconds` | `10` |
+| `behavior_agent.events_jsonl` | `outputs/detection_events.jsonl` |
+| `behavior_agent.output_dir` | `outputs/behavior_agent` |
+| `behavior_agent.memory_path` | `outputs/person_behavior_memory.json` |
+| `behavior_agent.host` | `http://127.0.0.1:11434` |
+| `behavior_agent.model` | `qwen3:4b` |
+| `behavior_agent.max_recent_events` | `30` |
+| `behavior_agent.temperature` | `0.1` |
+| `behavior_agent.num_predict` | `2048` |
+| `behavior_agent.num_ctx` | `8192` |
+| `behavior_agent.strict_json` | `true` |
+| `behavior_agent.update_memory` | `true` |
+| `behavior_agent.min_identity_confidence` | `0.65` |
+| `behavior_agent.identity_switch_reid_threshold` | `0.70` |
+| `behavior_agent.save_training_records` | `true` |
+| `behavior_agent.timeout_seconds` | `90` |
+| `logging.structured` | `true` |
+
+## 7. Running the system
+
+### FastAPI dashboard
+
+```bash
+cd ppe_monitor
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Standalone DeepStream runner:
+Open:
 
-```bash
-python -m app.deepstream.run \
-  --config config.yaml \
-  --source rtsp://user:pass@camera/stream1 \
-  --engine models/best2.engine \
-  --camera-id rig_floor_cam_01
+```text
+http://127.0.0.1:8000
 ```
 
-Notes:
-
-- Phase 1 uses DeepStream for decode + primary detection + tracking.
-- Existing Python compliance/state-machine logic remains active.
-- Phase 2 support added for `source_uris` list in the same runner.
-- Per-camera FPS is logged in performance logs via `per_camera_fps` and camera-aware `camera_id`.
-- If DeepStream dependencies are missing, app raises a clear setup error.
-
-DeepStream files:
-
-- `app/deepstream/deepstream_pipeline.py`
-- `app/deepstream/metadata_adapter.py`
-- `configs/deepstream/`
-- `docs/deepstream_jetson_setup.md`
-
-### Phase 0 Baseline Requirement
-
-Before DeepStream rollout on Jetson, capture a Python backend baseline in:
-
-- `docs/perf_baseline_python.md`
-
-### Performance Log File (JSONL)
-
-The app now writes periodic runtime snapshots to:
-
-- `outputs/performance_logs.jsonl`
-
-Each JSONL record has:
-
-- summary: FPS, tracked count, violations, dropped frames, compliance rate
-- compute: FLOP/s, GFLOP/s, TFLOP/s, TOPS, estimated utilization
-- model_rates: pose/PPE/verifier inference rates
-- memory: process and system memory
-- jetson: CPU/GPU/power/temp/fan (when Jetson bridge is enabled)
-
-Quick check:
+### `live_inference_window.py`
 
 ```bash
-tail -n 5 outputs/performance_logs.jsonl
+cd ppe_monitor
+python live_inference_window.py --source videos/simulationTest2.mp4 --show-skeleton
 ```
 
-### Grafana / Prometheus Integration
+What it shows:
+- OpenCV video with PPE boxes, person states, reasons, and metrics overlay.
+- Optional second status window.
+- Optional memory/anti-spam mode and compliance event JSONL output.
 
-The app now exposes a Prometheus endpoint:
+### Behavior agent
 
-- `GET /metrics`
+Enable in-app background mode (`config.yaml`):
 
-It exports live gauges for:
-
-- FPS, tracked count, active violations, dropped frames
-- estimated FLOP/s, GFLOP/s, TFLOP/s, TOPS, utilization
-- per-model inference rates (pose, PPE, verifier aux/crop, verifier ollama)
-- process/system memory metrics
-- event stream dropped writes
-- normalized Jetson exporter gauges (`ppe_monitor_jetson_*`)
-
-Quick check:
-
-```bash
-curl -s http://127.0.0.1:8000/metrics | head
+```yaml
+behavior_agent:
+  enabled: true
 ```
 
-Starter files included:
-
-- Prometheus config: `monitoring/prometheus.yml`
-- Grafana dashboard JSON: `monitoring/grafana/ppe_monitor_dashboard.json`
-
-Prometheus run example:
-
-```bash
-prometheus --config.file=monitoring/prometheus.yml
-```
-
-Grafana import:
-
-1. Add Prometheus datasource in Grafana.
-2. Import `monitoring/grafana/ppe_monitor_dashboard.json`.
-3. Select your Prometheus datasource when prompted.
-
-Jetson jtop exporter integration modes:
-
-1. Grafana mode:
-   - Prometheus scrapes this app (`/metrics`) and optionally the raw Jetson exporter (`:9100/metrics`).
-   - Use included dashboard panels for `ppe_monitor_jetson_*`.
-2. Own dashboard mode:
-   - Web UI fetches `GET /api/jetson/stats` and shows a live Jetson card in **Computation Performance**.
-3. Uvicorn-only mode (no separate exporter process):
-   - Set:
-     ```yaml
-     jetson_exporter:
-       enabled: true
-       mode: "local_jtop"
-       refresh_seconds: 1.0
-     ```
-   - Install `jetson-stats` in your venv.
-   - Run only `uvicorn app.main:app --reload`.
-   - The app reads jtop directly for `/api/jetson/stats` and `/metrics`.
-
-If you do not already have a Jetson exporter process, you can run the included script:
-
-```bash
-pip install -U jetson-stats prometheus-client
-python monitoring/jetson_jtop_exporter.py --host 0.0.0.0 --port 9100 --interval 1
-```
-
-Then verify:
-
-```bash
-curl -s http://127.0.0.1:9100/metrics | head
-```
-
-Jetson calibration preset:
-
-- `compute_monitor.device_peak_gflops: 8500` for Jetson Orin Nano 8GB standard mode
-- `compute_monitor.device_peak_gflops: 17000` for Jetson Orin Nano Super mode
-
-### Background Behavior Intelligence Agent (Qwen3 4B)
-
-This is a separate best-effort analytics layer and does **not** override safety logic.
-
-- Input stream: `outputs/detection_events.jsonl` (not `compliance_events.jsonl`)
-- Model: `qwen3:4b`
-- Endpoint used: Ollama `/api/generate`
-- Request constraints: `format: "json"` and `think: false`
-- Default mode: disabled in `config.yaml` (`behavior_agent.enabled: false`)
-
-Standalone run (recommended):
+Or run standalone (recommended for debugging):
 
 ```bash
 python -m app.ai_behavior_agent.agent \
   --config config.yaml \
   --events-jsonl outputs/detection_events.jsonl \
   --interval 5 \
-  --once \
   --model qwen3:4b \
   --host http://127.0.0.1:11434
 ```
 
-Outputs:
-
-- `outputs/behavior_agent/latest_behavior_insight.json`
-- `outputs/behavior_agent/history/behavior_agent_<timestamp>.json`
-- `outputs/behavior_agent/training_records.jsonl` (when enabled)
-- `outputs/person_behavior_memory.json` (safe allowlisted updates only)
-
-Safety constraints:
-
-- Agent never confirms final violations.
-- Agent never overrides the state machine or detector thresholds.
-- If Ollama is unavailable or emits invalid JSON, cycle is skipped safely.
-
-### Behavior Agent API
-
-When FastAPI is running, these read-only endpoints are available:
-
-- `GET /api/behavior-agent/latest`
-- `GET /api/behavior-agent/history`
-- `GET /api/behavior-agent/memory`
-
-If files are missing, each endpoint returns a safe empty payload.
-
-### PPE Compliance Memory / Anti-Spam Status
-
-Frame-by-frame detection can cause dashboard status flicker (`OK -> VIOLATION -> OK`)
-when detections momentarily fail due to blur, occlusion, or motion.
-
-This project includes an optional memory layer for the same tracked `track_id`
-within the same camera/session:
-
-- per-item temporal voting in a recent frame window
-- per-track state machine (`*_CANDIDATE` -> `*_CONFIRMED`)
-- stable status hold during short unclear flicker
-- alert cooldown to prevent duplicate alert spam
-
-This first version does **not** perform long-term identity re-identification. If
-a person leaves and returns with a new `track_id`, they are treated as a new track.
-
-Runtime entry script for this mode: `live_inference_window.py`
+One-shot cycle:
 
 ```bash
-python3 live_inference_window.py \
-  --source ./videos/simulationTest2.mp4 \
-  --ppe-model models/best2.engine \
-  --device 0 \
-  --imgsz 640 \
-  --enable-memory \
-  --memory-window 30 \
-  --alert-cooldown 60 \
-  --events-jsonl outputs/compliance_events.jsonl
+python -m app.ai_behavior_agent.agent --config config.yaml --once
 ```
 
-Live inference now also emits richer `ppe_observation` analytics records (when `event_stream.enabled: true`) to:
+Interval semantics:
+- Each cycle reads up to `max_recent_events` recent `ppe_observation` events.
+- It writes latest/history outputs per cycle.
+- Failures (timeout/invalid JSON) are skipped safely and do not block the pipeline.
 
-- `outputs/detection_events.jsonl`
+## 8. Models
 
-That stream is the input for the background behavior agent.
+| File | Role in code | Runtime input expectation | Source/provenance |
+|---|---|---|---|
+| `models/yolo26n-pose.onnx` | Person pose + tracking (`YOLOPoseTracker`) | Inference size `inference.imgsz` (default `640`) via Ultralytics | YOLO pose family artifact; exact training provenance not declared in this repo. |
+| `models/best2.onnx` | Primary PPE detector (`YOLOPPEDetector`) | Inference size `inference.imgsz` (default `640`) | Custom PPE detector artifact; exact dataset/training recipe is not fully documented in code. |
+| `models/yoloe-ppeRev2.onnx` | Verifier model (crop verification + optional aux full-frame detections) | Inference size `inference.imgsz` (default `640`) | YOLOE-based verifier artifact; exact training provenance not declared in code. |
+| `models/det_2.5g.onnx` | SCRFD face detector for goggles face gate | `face_gate.input_size` (default `640`) | SCRFD detector artifact. |
+| `models/w600k_mbf.onnx` | ArcFace backbone candidate | Not used in runtime pipeline currently | ArcFace model artifact, currently not integrated in `MonitoringPipeline`. |
 
-### SCRFD Goggles Face Gate (Shadow + Optional Enforcement)
+Notes:
+- In the current repository snapshot, `config.yaml` points to `models/yoloe-ppeRev2.onnx`; if you only have `models/yoloe-ppe.onnx`, update config.
+- DeepStream primary detector expects TensorRT engine (`best2.engine`/`.plan`) plus parser-compatible config.
 
-Goal: avoid false goggles violations when the face is not visible (back-facing / severe occlusion).
+### TensorRT export commands
 
-Behavior:
-
-- In `shadow_mode`, app logs `face_gate_observation` events but keeps current decisions unchanged.
-- In `enforce` mode, if face is not visible for goggles item, result is forced to `INDETERMINATE`.
-
-Recommended rollout:
-
-1. Start with shadow mode only:
-   ```yaml
-   face_gate:
-     enabled: true
-     shadow_mode: true
-     enforce: false
-   ```
-2. Review logs for `face_gate_observation`.
-3. If results are good, switch to:
-   ```yaml
-   face_gate:
-     enforce: true
-   ```
-
-Note: current built-in face gate backend expects SCRFD ONNX model path (`.onnx`).
-
-## ONNX Caveats
-
-- TensorRT export is the next optimization step once ONNX flow is stable.
-- Verify each model's input shape and output assumptions before debugging association logic.
-- YOLOE text-prompt inference usually does not survive ONNX export. The verifier is implemented as fixed-class detection and filtered by expected item.
-
-## Architecture
-
-### Flowchart (Per-Frame Processing)
-
-```mermaid
-flowchart TD
-    A[VideoSource.read_latest] --> B[MonitoringPipeline.process_frame]
-    B --> C[Encode frame to JPEG]
-    B --> D[PoseTracker.track]
-    B --> E[PPEDetector.detect]
-
-    D --> F[For each tracked person]
-    E --> F
-
-    F --> G[For each required PPE item]
-    G --> H[AssociationEngine.classify_item]
-
-    H -->|COMPLIANT / INDETERMINATE / held->VIOLATION| I[Use classification directly]
-    H -->|VIOLATION_TENTATIVE| J[VerifierCache.get person_id+item]
-
-    J -->|Cache hit| K[Map cached verdict to COMPLIANT/VIOLATION]
-    J -->|Cache miss| L[Crop person bbox]
-    L --> M[YOLOEVerifier.verify]
-    M --> N[VerifierCache.put with TTL]
-    N --> O[Map verdict to COMPLIANT/VIOLATION]
-
-    I --> P[StateMachine.update]
-    K --> P
-    O --> P
-
-    P --> Q[Build PersonPayload + overall status]
-    Q --> R[Build Active Alerts with evidence_jpeg_base64]
-    R --> S[Build Metrics FPS/verifier_calls/dropped/compliance]
-    S --> T[FramePayload + JPEG]
-
-    T --> U[WebSocket send bytes JPEG]
-    U --> V[WebSocket send JSON metadata]
-```
-
-### System Diagram (Runtime Component/Data Flow)
-
-```mermaid
-flowchart LR
-    subgraph Backend["FastAPI Backend"]
-        M[main.py]
-        VS[VideoSource]
-        PL[MonitoringPipeline]
-        PT[PoseTracker]
-        PD[PPEDetector]
-        AS[AssociationEngine]
-        VC[VerifierCache]
-        VF[YOLOEVerifier]
-        SM[PersonComplianceState]
-    end
-
-    subgraph Models["ONNX Models"]
-        P1[yolo26n-pose.onnx]
-        P2[best.onnx]
-        P3[yoloe-ppe.onnx]
-    end
-
-    subgraph Frontend["Dashboard (static)"]
-        JS[dashboard.js]
-        CV[Canvas Overlay]
-        AP[Alerts Panel + Snapshot + Ack]
-        PP[Tracked Persons Panel]
-        MT[Metrics Strip]
-    end
-
-    M --> VS
-    M --> PL
-
-    PL --> PT
-    PL --> PD
-    PL --> AS
-    PL --> VC
-    PL --> VF
-    PL --> SM
-
-    PT --> P1
-    PD --> P2
-    VF --> P3
-
-    PL -->|JPEG bytes + JSON FramePayload| JS
-    JS --> CV
-    JS --> AP
-    JS --> PP
-    JS --> MT
-```
-
-## Troubleshooting
-
-- CUDA expected but CPU used:
-  - check startup provider logs for each model
-  - verify GPU runtime installation and provider availability
-- Too many dropped frames:
-  - lower input resolution, reduce FPS, or move to GPU
-- Alert flicker:
-  - increase `window_size` or `violation_threshold`
-  - tune `clear_threshold` and verifier cache TTLs
-
-## Testing
-
-Run unit tests:
+Primary detector (`best2`) engine export:
 
 ```bash
-pytest -q
+yolo export model=models/best2.pt format=engine device=0 half=True imgsz=640
 ```
 
-CI can run with `models.allow_mock_models: true` (no real model files required).
-This now includes behavior-agent tests (`event_reader`, `ollama_client` mocking, memory-reinforcer allowlist, runner output safety, event-stream queue behavior).
-
-## Verifier Evaluation
-
-Use `eval_verifier.py` to get concrete verifier quality metrics on labeled crops.
-
-Expected dataset layout:
-
-```text
-<dataset_root>/
-  helmet/
-    compliant/*.jpg
-    violation/*.jpg
-  goggles/
-    compliant/*.jpg
-    violation/*.jpg
-  gloves/
-    compliant/*.jpg
-    violation/*.jpg
-  boots/
-    compliant/*.jpg
-    violation/*.jpg
-  coverall/
-    compliant/*.jpg
-    violation/*.jpg
-```
-
-Run:
+Alternative `trtexec` minimal command:
 
 ```bash
-python eval_verifier.py \
-  --model models/yoloe-ppe.onnx \
-  --dataset-root ./verifier_eval_data \
-  --conf 0.45 \
-  --imgsz 640 \
-  --report-json outputs/verifier_report.json
+/usr/src/tensorrt/bin/trtexec \
+  --onnx=models/best2.onnx \
+  --saveEngine=models/best2.engine \
+  --fp16
 ```
 
-The report includes per-item confusion counts (`tp/fp/tn/fn`), precision, recall, F1, false-clear rate, and violation recall.
+Face/identity candidate engines (not yet integrated into runtime decision path):
 
-## Pipeline Lift Evaluation (Base vs Verifier)
+```bash
+/usr/src/tensorrt/bin/trtexec --onnx=models/det_2.5g.onnx --saveEngine=models/scrfd_2.5g_fp16.plan --fp16
+/usr/src/tensorrt/bin/trtexec --onnx=models/w600k_mbf.onnx --saveEngine=models/arcface_mbf_fp16.plan --fp16
+```
 
-Use `eval_pipeline_lift.py` to compare:
+## 9. Outputs
 
-- Base-only: association output without verifier override
-- Base+verifier: current runtime behavior with cache-gated verifier
+### `outputs/detection_events.jsonl`
 
-Required inputs:
-
-1. Video file
-2. Labels JSON with per-frame person boxes and per-item compliance labels
-
-Example labels JSON:
+- Writer: [`app/event_stream.py`](app/event_stream.py)
+- Trigger: raw/stable/state change or heartbeat.
+- Record schema:
 
 ```json
 {
-  "items": ["helmet", "goggles", "gloves", "boots", "coverall"],
-  "frames": [
-    {
-      "frame_id": 10,
-      "persons": [
-        {
-          "bbox": [120, 80, 420, 680],
-          "items": {
-            "helmet": "COMPLIANT",
-            "goggles": "VIOLATION",
-            "gloves": "COMPLIANT",
-            "boots": "COMPLIANT",
-            "coverall": "COMPLIANT"
-          }
-        }
-      ]
+  "schema_version": "1.0",
+  "event_id": "<ms>-<seq>",
+  "event_type": "ppe_observation",
+  "timestamp": "ISO-8601 UTC",
+  "camera_id": "rig_floor_cam_01",
+  "frame_id": 123,
+  "track_id": 5,
+  "person_memory_id": null,
+  "bbox": [x1, y1, x2, y2],
+  "ppe": {
+    "helmet": {
+      "status": "COMPLIANT|VIOLATION|INDETERMINATE|VIOLATION_TENTATIVE",
+      "status_stable": "COMPLIANT|VIOLATION|INDETERMINATE",
+      "positive_conf": 0.0,
+      "negative_conf": 0.0,
+      "reason": "string",
+      "sm_stage": "CLEAR|VIOLATION_CANDIDATE|VIOLATION_CONFIRMED",
+      "alert_status": "ACTIVE|CLEARED"
     }
+  },
+  "overall_status": "COMPLIANT|VIOLATION|INDETERMINATE",
+  "tracker": {
+    "tracking_confidence": null,
+    "reid_similarity": null,
+    "occlusion": null
+  },
+  "zone": null,
+  "risk_context": null
+}
+```
+
+### `outputs/behavior_agent/latest_behavior_insight.json` and history
+
+- Writer: [`app/ai_behavior_agent/storage.py`](app/ai_behavior_agent/storage.py)
+- Files:
+  - `outputs/behavior_agent/latest_behavior_insight.json`
+  - `outputs/behavior_agent/history/behavior_agent_<timestamp>.json`
+- Canonical schema (normalized by [`app/ai_behavior_agent/schemas.py`](app/ai_behavior_agent/schemas.py)):
+
+```json
+{
+  "agent_type": "background_behavior_intelligence",
+  "model": "qwen3:4b",
+  "generated_at": "ISO-8601 UTC",
+  "time_window": {
+    "start": "ISO-8601 or null",
+    "end": "ISO-8601 or null",
+    "event_count": 0
+  },
+  "summary": "string",
+  "detected_patterns": [
+    {
+      "type": "repeated_ppe_violation|possible_identity_switch|possible_false_violation|alert_flicker|zone_risk_pattern",
+      "description": "string",
+      "confidence": 0.0,
+      "track_ids": [11],
+      "evidence": "string"
+    }
+  ],
+  "memory_update_recommendations": [
+    {
+      "track_id": 11,
+      "action": "flag_possible_identity_switch|set_review_needed|mark_violation_unconfirmed|append_anomaly_flag|store_dashboard_insight|store_training_label"
+    }
+  ],
+  "dashboard_insights": [
+    {"title": "Insight", "detail": "string", "confidence": 0.0}
+  ],
+  "training_data_suggestions": [
+    {"track_id": 11, "label_hint": "string", "reason": "string"}
   ]
 }
 ```
 
-Run:
+Additional behavior-agent files:
+- `outputs/behavior_agent/training_records.jsonl` (when `save_training_records: true`)
+- `outputs/behavior_agent/debug/invalid_response_<ts>.txt` (invalid Ollama JSON debug capture)
+- `outputs/person_behavior_memory.json` (allowlisted memory updates)
+
+### `outputs/performance_logs.jsonl`
+
+- Writer: [`app/performance_logger.py`](app/performance_logger.py)
+- Trigger: periodic (`performance_logging.interval_seconds`).
+- Record schema:
+
+```json
+{
+  "schema_version": "1.0",
+  "event_type": "performance_snapshot",
+  "event_id": "<ms>-<seq>",
+  "timestamp": "ISO-8601 UTC",
+  "timestamp_epoch": 0.0,
+  "backend": "python|deepstream",
+  "frame_id": 0,
+  "source": "websocket_stream|websocket_stream_deepstream|live_window_*",
+  "source_id": 0,
+  "camera_id": "rig_floor_cam_01",
+  "input_fps": 0.0,
+  "processed_fps": 0.0,
+  "dropped_frames": 0,
+  "object_count": 0,
+  "primary_infer_latency_ms": 0.0,
+  "tracker_latency_ms": 0.0,
+  "end_to_end_latency_ms": 0.0,
+  "cpu_percent": 0.0,
+  "gpu_percent": 0.0,
+  "ram_percent": 0.0,
+  "temperature_c": 0.0,
+  "verifier_calls_per_sec": 0.0,
+  "ollama_calls_per_sec": 0.0,
+  "summary": {},
+  "compute": {},
+  "model_rates": {},
+  "memory": {},
+  "per_camera_fps": {"rig_floor_cam_01": 0.0},
+  "jetson": {},
+  "metrics": {}
+}
+```
+
+`per_camera_fps` appears when DeepStream bundle camera FPS map is available.
+
+### Alerts file (`outputs/compliance_events.jsonl`)
+
+- Writer: [`app/compliance_events.py`](app/compliance_events.py)
+- Used by: [`live_inference_window.py`](live_inference_window.py) only when `--enable-memory` is set.
+- FastAPI dashboard path does not write this file by default.
+- Record schema:
+
+```json
+{
+  "timestamp": "ISO-8601 UTC",
+  "event_type": "PPE_VIOLATION_CONFIRMED",
+  "camera_id": "string",
+  "track_id": 12,
+  "state": "VIOLATION_CONFIRMED",
+  "item_statuses": {
+    "helmet": "OK|VIOLATION|UNKNOWN|UNCLEAR",
+    "coverall": "OK|VIOLATION|UNKNOWN|UNCLEAR",
+    "gloves": "OK|VIOLATION|UNKNOWN|UNCLEAR",
+    "safety_glasses": "OK|VIOLATION|UNKNOWN|UNCLEAR",
+    "boots": "OK|VIOLATION|UNKNOWN|UNCLEAR"
+  },
+  "bbox": [x1, y1, x2, y2]
+}
+```
+
+## 10. Performance notes
+
+- Repository status on Jetson Orin Nano Super benchmark:
+  - A formal committed baseline number is not present yet.
+  - [`docs/perf_baseline_python.md`](docs/perf_baseline_python.md) exists as a template and is currently unfilled.
+- Known bottlenecks from current implementation:
+  - Python hot path still performs pose tracking and post-processing per frame.
+  - Optional detector ensemble adds extra full-frame YOLOE inference.
+  - Verifier crop calls increase load on ambiguous or low-confidence cases.
+  - If VLM escalation is triggered, Ollama request latency can stall that decision path until timeout/response.
+  - DeepStream mode still routes frame data back into Python pipeline for pose/compliance logic.
+- Expect FPS degradation when:
+  - Input resolution/FPS is high,
+  - multiple people are present,
+  - `verifier.low_conf_escalation` triggers often,
+  - Ollama responses are slow,
+  - system memory pressure causes paging.
+
+## 11. Roadmap
+
+- DeepStream 7.1 backend hardening for production parser compatibility and stable acceleration gains.
+- Face identity layer (SCRFD + ArcFace TensorRT engines are prepared, runtime integration pending).
+- PostgreSQL event mirror to head office.
+- Multi-camera scaling with stronger per-camera isolation and throughput controls.
+
+## 12. Troubleshooting
+
+### Ollama not responding / timeout
+
+Symptoms:
+- behavior agent logs `ollama_request_failed` or timeout.
+- verifier path returns indeterminate from Ollama.
+
+Checks:
 
 ```bash
-python eval_pipeline_lift.py \
-  --video ./videos/simulationTest2.mp4 \
-  --labels ./eval/labels.json \
-  --config ./config.yaml \
-  --iou-match-threshold 0.30 \
-  --report-json outputs/pipeline_lift_report.json
+curl -s http://127.0.0.1:11434/api/tags
+ollama serve
 ```
 
-Output includes:
+Fixes:
+- Ensure Ollama daemon is running.
+- Verify `verifier.ollama.host` and `behavior_agent.host`.
+- Increase timeout values if model is too slow.
 
-- Per-item and overall precision/recall/F1
-- False-clear rate (GT violation predicted compliant)
-- Violation recall
-- Lift deltas between modes
-- Person matching rate (GT person to tracked person IoU match coverage)
+### Behavior agent returns invalid JSON / empty insights
 
-## Auto-Extract Verifier ROI Crops
+Symptoms:
+- `invalid_json_response` cycle skip.
+- latest insight remains empty/default.
 
-Use `extract_verifier_rois.py` to export ROI crops from video using the exact
-item-crop logic used by the runtime pipeline.
-
-Run:
+Checks:
 
 ```bash
-python extract_verifier_rois.py \
-  --video ./videos/simulationTest2.mp4 \
-  --output-dir ./verifier_eval_data_auto \
-  --mode all \
-  --bucket-by final \
-  --frame-step 2 \
-  --max-frames 0
+ls outputs/behavior_agent/debug
 ```
 
-Modes:
+Fixes:
+- Inspect `invalid_response_*.txt` in debug folder.
+- Keep `strict_json: true` and `think: false` (already enforced).
+- Reduce prompt load (`max_recent_events`) if context is too large.
 
-- `all`: save every item ROI for each tracked person
-- `tentative`: save only base `VIOLATION_TENTATIVE` items
-- `non_compliant`: save base `VIOLATION` + `VIOLATION_TENTATIVE`
-- `--bucket-by base|final`: place images by base association class or final class after verifier
+### Model files missing / wrong filename
 
-Output structure:
+Symptoms:
+- startup `FileNotFoundError` or unexpected mock mode.
 
-```text
-verifier_eval_data_auto/
-  <item>/
-    compliant_candidate/
-    violation_candidate/
-    indeterminate_candidate/
-  metadata.jsonl
+Checks:
+
+```bash
+ls models
 ```
 
-The candidate folders are pre-bucketed by base classification for faster manual review.
+Fixes:
+- Place required ONNX/engine files in `models/`.
+- Align `config.yaml` model paths with actual filenames.
+
+### RTSP/file source open failure
+
+Symptoms:
+- `Unable to open video source: ...` from `VideoSource.open()`.
+
+Fixes:
+- Validate path/URI and file permissions.
+- Test source with plain OpenCV/ffplay first.
+- For Jetson, confirm codec support in GStreamer/OpenCV build.
+
+### CUDA library/provider mismatch
+
+Symptoms:
+- ONNX models run on `CPUExecutionProvider` unexpectedly.
+
+Checks:
+
+```bash
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+```
+
+Fixes:
+- Install compatible `onnxruntime-gpu` for Jetson stack.
+- Ensure CUDA/TensorRT versions match JetPack.
+- Review startup logs from `model_startup_check`.
+
+### Port already in use
+
+Symptoms:
+- `address already in use` for uvicorn/prometheus/exporter.
+
+Fixes:
+
+```bash
+# choose a different port
+uvicorn app.main:app --host 0.0.0.0 --port 8001
+prometheus --config.file=monitoring/prometheus.yml --web.listen-address=0.0.0.0:9091
+```
+
+### DeepStream dependency failure (`No module named gi` / `pyds` missing)
+
+Symptoms:
+- startup error from `DeepStreamUnavailableError`.
+
+Fixes:
+- Follow [`docs/deepstream_jetson_setup.md`](docs/deepstream_jetson_setup.md).
+- Install `pyds`, verify GStreamer plugins, and confirm DeepStream plugin paths.
+
+### DeepStream parser crash (`Could not find output coverage layer`)
+
+Symptoms:
+- nvinfer parse error and segmentation fault.
+
+Fixes:
+- Ensure your GIE config matches YOLO output parser requirements.
+- Verify custom parser library path and function names in DeepStream config.
+- Rebuild engine/config pair on the same target runtime.
+
