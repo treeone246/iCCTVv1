@@ -33,11 +33,16 @@ class YOLOPPEDetector(PPEDetectorBase):
         conf_threshold: float,
         imgsz: int,
         label_aliases: Dict[str, List[str]] | None = None,
+        per_item_conf_thresholds: Dict[str, float] | None = None,
     ) -> None:
         self.model = model
         self.conf_threshold = conf_threshold
         self.imgsz = imgsz
         self.alias_to_canonical = build_alias_index(label_aliases or {})
+        self.per_item_conf_thresholds = {
+            normalize_label(str(k)): float(v)
+            for k, v in dict(per_item_conf_thresholds or {}).items()
+        }
 
     def detect(self, frame: np.ndarray) -> List[PPEDetection]:
         results = self.model.predict(
@@ -63,11 +68,15 @@ class YOLOPPEDetector(PPEDetectorBase):
             class_id = int(cls[idx]) if cls is not None else -1
             raw_label = str(names.get(class_id, class_id))
             label = canonicalize_label(raw_label, self.alias_to_canonical)
+            score = float(conf[idx]) if conf is not None else 0.0
+            item_threshold = float(self.per_item_conf_thresholds.get(label, self.conf_threshold))
+            if score < item_threshold:
+                continue
             detections.append(
                 PPEDetection(
                     label=label,
                     bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
-                    conf=float(conf[idx]) if conf is not None else 0.0,
+                    conf=score,
                     source="ppe_primary",
                 )
             )

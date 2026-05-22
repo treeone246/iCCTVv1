@@ -183,6 +183,10 @@ class MonitoringPipeline:
             pos = [str(x) for x in spec.get("positive", self.vlm_label_polarity[item]["positive"])]
             neg = [str(x) for x in spec.get("negative", self.vlm_label_polarity[item]["negative"])]
             self.vlm_label_polarity[item] = {"positive": pos, "negative": neg}
+        self.per_item_conf_thresholds = {
+            str(k): float(v)
+            for k, v in dict(config.get("inference", {}).get("per_item_conf_thresholds", {})).items()
+        }
 
         dash_cfg = config["dashboard"]
         self.jpeg_quality = int(dash_cfg["jpeg_quality"])
@@ -1228,11 +1232,15 @@ class MonitoringPipeline:
             label = canonicalize_label(raw_label, self.alias_to_canonical)
             if label not in self.ensemble_allow_from_verifier:
                 continue
+            score = float(conf[idx]) if conf is not None else 0.0
+            item_threshold = float(self.per_item_conf_thresholds.get(label, self.ensemble_yoloe_conf))
+            if score < item_threshold:
+                continue
             out.append(
                 PPEDetection(
                     label=label,
                     bbox=(float(box[0]), float(box[1]), float(box[2]), float(box[3])),
-                    conf=float(conf[idx]) if conf is not None else 0.0,
+                    conf=score,
                     source="yoloe_aux",
                 )
             )

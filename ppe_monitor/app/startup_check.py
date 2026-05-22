@@ -285,6 +285,7 @@ def load_runtime_components(
             conf_threshold=float(infer_cfg["conf_threshold_ppe"]),
             imgsz=imgsz,
             label_aliases=label_aliases,
+            per_item_conf_thresholds=dict(infer_cfg.get("per_item_conf_thresholds", {})),
         )
 
     if loaded_models["verifier"] is None:

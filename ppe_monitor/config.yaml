@@ -60,6 +60,8 @@ inference:
   conf_threshold_pose: 0.40
   conf_threshold_ppe: 0.22
   conf_threshold_verifier: 0.45
+  per_item_conf_thresholds:
+    harness: 0.70
   keypoint_conf_floor: 0.40
   imgsz: 640
 
