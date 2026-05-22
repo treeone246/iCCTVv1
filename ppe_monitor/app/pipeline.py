@@ -2,10 +2,12 @@
 
 import base64
 import json
+import queue
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, List, Tuple
+from typing import Deque, Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -32,6 +34,7 @@ from .schemas import (
     MetricsPayload,
     OverallStatus,
     PersonPayload,
+    VerifierResult,
     VerifierVerdict,
 )
 from .state_machine import PersonComplianceState
@@ -60,6 +63,25 @@ class StableStateTracker:
     score: float = 0.0
     positive_memory: float = 0.0
     negative_memory: float = 0.0
+
+
+@dataclass
+class VerifierTask:
+    """Queued async verifier task payload."""
+
+    person_id: int
+    item: str
+    item_crop: np.ndarray
+    context: VerifierContext
+
+
+@dataclass
+class VerifierOutcome:
+    """Completed async verifier result."""
+
+    person_id: int
+    item: str
+    result: VerifierResult
 
 
 def log_event(event_type: str, frame_id: int, person_id: int, **fields: object) -> None:
@@ -186,6 +208,20 @@ class MonitoringPipeline:
         self._last_backend = "python"
         self._ppe_model_path = str(config.get("models", {}).get("ppe", ""))
         self._ppe_task = "detect"
+        self._adaptive_detect_frames = 0
+        self._adaptive_reuse_frames = 0
+
+        scheduler_cfg = config.get("adaptive_scheduler", {}) or {}
+        self.adaptive_scheduler_enabled = bool(scheduler_cfg.get("enabled", False))
+        self.ppe_interval_frames = max(1, int(scheduler_cfg.get("ppe_interval_frames", 1)))
+        self.ppe_max_staleness_frames = max(
+            self.ppe_interval_frames,
+            int(scheduler_cfg.get("max_detection_staleness_frames", self.ppe_interval_frames * 2)),
+        )
+        self.ppe_force_on_new_track = bool(scheduler_cfg.get("force_on_new_track", True))
+        self._last_ppe_detections: List[PPEDetection] = []
+        self._last_ppe_frame_id = -1_000_000_000
+        self._last_track_ids: Set[int] = set()
 
         stability_cfg = config.get("status_stability", {})
         self.stable_compliant_enter = int(stability_cfg.get("compliant_enter_frames", 2))
@@ -210,6 +246,28 @@ class MonitoringPipeline:
         self.mem_max_abs_score = float(mem_cfg.get("max_abs_score", 20.0))
         self.event_writer = EventStreamWriter(config)
         self.face_gate = SCRFDFaceGate(config)
+
+        async_cfg = config.get("async_verifier", {}) or {}
+        self.async_verifier_enabled = bool(async_cfg.get("enabled", False))
+        self.async_verifier_max_queue = max(32, int(async_cfg.get("queue_max", 512)))
+        self.async_verifier_drop_if_full = bool(async_cfg.get("drop_if_full", True))
+        self._async_in_q: "queue.Queue[Optional[VerifierTask]]" = queue.Queue(maxsize=self.async_verifier_max_queue)
+        self._async_out_q: "queue.Queue[VerifierOutcome]" = queue.Queue(maxsize=self.async_verifier_max_queue)
+        self._async_pending: Set[Tuple[int, str]] = set()
+        self._async_lock = threading.Lock()
+        self._async_thread: Optional[threading.Thread] = None
+        self._async_stop = threading.Event()
+        self._async_enqueued = 0
+        self._async_dropped = 0
+        self._async_completed = 0
+        self._verifier_infer_lock = threading.Lock()
+        if self.async_verifier_enabled:
+            self._async_thread = threading.Thread(
+                target=self._run_async_verifier_worker,
+                name="async-verifier-worker",
+                daemon=True,
+            )
+            self._async_thread.start()
 
         cm_cfg = config.get("compute_monitor", {}) or {}
         self.compute_monitor_enabled = bool(cm_cfg.get("enabled", True))
@@ -237,6 +295,7 @@ class MonitoringPipeline:
         ppe_detections_override: List[PPEDetection] | None = None,
         backend: str = "python",
     ) -> tuple[FramePayload, bytes]:
+        self._drain_async_verifier_results()
         self._frames_processed += 1
         if tracked_people_override is None:
             self._pose_infer_calls += 1
@@ -254,7 +313,11 @@ class MonitoringPipeline:
                 "ppe_merged": len(ppe_detections_override),
             }
         else:
-            ppe_detections = self._detect_ppe(frame)
+            ppe_detections = self._select_ppe_detections(
+                frame=frame,
+                frame_id=frame_id,
+                tracked_people=tracked_people,
+            )
         self._last_backend = str(backend or "python")
 
         person_payloads: List[PersonPayload] = []
@@ -485,6 +548,46 @@ class MonitoringPipeline:
         stale_keys = [k for k in self._stable_states.keys() if k[0] not in active_ids]
         for key in stale_keys:
             self._stable_states.pop(key, None)
+        if self.async_verifier_enabled:
+            with self._async_lock:
+                stale_pending = [k for k in self._async_pending if k[0] not in active_ids]
+                for key in stale_pending:
+                    self._async_pending.discard(key)
+
+    def _select_ppe_detections(
+        self,
+        *,
+        frame: np.ndarray,
+        frame_id: int,
+        tracked_people: List[TrackedPerson],
+    ) -> List[PPEDetection]:
+        if not self.adaptive_scheduler_enabled:
+            detections = self._detect_ppe(frame)
+            self._adaptive_detect_frames += 1
+            self._last_track_ids = {p.person_id for p in tracked_people}
+            self._last_ppe_frame_id = int(frame_id)
+            self._last_ppe_detections = detections
+            return detections
+
+        track_ids = {p.person_id for p in tracked_people}
+        since_last = int(frame_id) - int(self._last_ppe_frame_id)
+        new_track_seen = self.ppe_force_on_new_track and any(pid not in self._last_track_ids for pid in track_ids)
+        no_previous = self._last_ppe_frame_id < 0
+        stale = since_last >= self.ppe_max_staleness_frames
+        interval_reached = since_last >= self.ppe_interval_frames
+
+        should_detect = no_previous or interval_reached or stale or new_track_seen
+        if should_detect:
+            detections = self._detect_ppe(frame)
+            self._adaptive_detect_frames += 1
+            self._last_ppe_frame_id = int(frame_id)
+            self._last_ppe_detections = detections
+            self._last_track_ids = track_ids
+            return detections
+
+        self._adaptive_reuse_frames += 1
+        self._last_track_ids = track_ids
+        return list(self._last_ppe_detections)
 
     def _classify_person_item(
         self,
@@ -590,19 +693,26 @@ class MonitoringPipeline:
                 negative_conf=vctx.negative_conf,
             )
 
-        verify_result = self.verifier.verify(item_crop, item, context=vctx)
-        self.verifier_calls.append(time.time())
-        self._verifier_crop_infer_calls += 1
-        if str(getattr(verify_result, "source", "")).lower() == "ollama":
-            self.verifier_ollama_calls.append(time.time())
-            self._verifier_ollama_calls += 1
-        if verify_result.verdict == VerifierVerdict.COMPLIANT:
-            ttl = self.ttl_compliant
-        elif verify_result.verdict == VerifierVerdict.VIOLATION:
-            ttl = self.ttl_violation
-        else:
-            ttl = self.ttl_indeterminate
-        self.cache.put(person.person_id, item, verify_result, ttl)
+        if self.async_verifier_enabled:
+            pending_reason = self._queue_async_verifier_task(
+                person_id=person.person_id,
+                item=item,
+                item_crop=item_crop,
+                context=vctx,
+            )
+            return ItemDecision(
+                Classification.INDETERMINATE,
+                pending_reason,
+                positive_conf=vctx.positive_conf,
+                negative_conf=vctx.negative_conf,
+            )
+
+        verify_result = self._run_sync_verifier(
+            person_id=person.person_id,
+            item_crop=item_crop,
+            item=item,
+            context=vctx,
+        )
         final_cls, reason = self._classification_from_verdict(
             verify_result.verdict,
             source=verify_result.source,
@@ -633,6 +743,134 @@ class MonitoringPipeline:
             return False
         threshold = self.low_conf_escalation_thresholds.get(item, self.low_conf_escalation_threshold)
         return float(positive_conf) < float(threshold)
+
+    def _run_sync_verifier(
+        self,
+        *,
+        person_id: int,
+        item_crop: np.ndarray,
+        item: str,
+        context: VerifierContext,
+    ) -> VerifierResult:
+        with self._verifier_infer_lock:
+            verify_result = self.verifier.verify(item_crop, item, context=context)
+        self.verifier_calls.append(time.time())
+        self._verifier_crop_infer_calls += 1
+        if str(getattr(verify_result, "source", "")).lower() == "ollama":
+            self.verifier_ollama_calls.append(time.time())
+            self._verifier_ollama_calls += 1
+        if verify_result.verdict == VerifierVerdict.COMPLIANT:
+            ttl = self.ttl_compliant
+        elif verify_result.verdict == VerifierVerdict.VIOLATION:
+            ttl = self.ttl_violation
+        else:
+            ttl = self.ttl_indeterminate
+        self.cache.put(person_id, item, verify_result, ttl)
+        return verify_result
+
+    def _queue_async_verifier_task(
+        self,
+        *,
+        person_id: int,
+        item: str,
+        item_crop: np.ndarray,
+        context: VerifierContext,
+    ) -> str:
+        key = (int(person_id), str(item))
+        with self._async_lock:
+            if key in self._async_pending:
+                return "async_verifier_pending"
+            self._async_pending.add(key)
+
+        task = VerifierTask(
+            person_id=int(person_id),
+            item=str(item),
+            item_crop=item_crop.copy(),
+            context=VerifierContext(
+                person_crop=context.person_crop.copy() if context.person_crop is not None else None,
+                item_crop=context.item_crop.copy() if context.item_crop is not None else None,
+                positive_conf=float(context.positive_conf),
+                negative_conf=float(context.negative_conf),
+                expected_item=str(context.expected_item),
+            ),
+        )
+        try:
+            self._async_in_q.put_nowait(task)
+            self._async_enqueued += 1
+            return "async_verifier_queued"
+        except queue.Full:
+            with self._async_lock:
+                self._async_pending.discard(key)
+            self._async_dropped += 1
+            if not self.async_verifier_drop_if_full:
+                return "async_verifier_queue_full_nonblocking"
+            return "async_verifier_queue_full"
+
+    def _run_async_verifier_worker(self) -> None:
+        while not self._async_stop.is_set():
+            try:
+                task = self._async_in_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if task is None:
+                return
+            try:
+                with self._verifier_infer_lock:
+                    result = self.verifier.verify(task.item_crop, task.item, context=task.context)
+            except Exception:
+                result = VerifierResult(
+                    verdict=VerifierVerdict.INDETERMINATE,
+                    score=0.0,
+                    source="async_error",
+                )
+            try:
+                self._async_out_q.put_nowait(
+                    VerifierOutcome(
+                        person_id=task.person_id,
+                        item=task.item,
+                        result=result,
+                    )
+                )
+                self._async_completed += 1
+            except queue.Full:
+                self._async_dropped += 1
+                with self._async_lock:
+                    self._async_pending.discard((task.person_id, task.item))
+
+    def _drain_async_verifier_results(self) -> None:
+        if not self.async_verifier_enabled:
+            return
+        while True:
+            try:
+                outcome = self._async_out_q.get_nowait()
+            except queue.Empty:
+                break
+
+            verify_result = outcome.result
+            self.verifier_calls.append(time.time())
+            self._verifier_crop_infer_calls += 1
+            if str(getattr(verify_result, "source", "")).lower() == "ollama":
+                self.verifier_ollama_calls.append(time.time())
+                self._verifier_ollama_calls += 1
+            if verify_result.verdict == VerifierVerdict.COMPLIANT:
+                ttl = self.ttl_compliant
+            elif verify_result.verdict == VerifierVerdict.VIOLATION:
+                ttl = self.ttl_violation
+            else:
+                ttl = self.ttl_indeterminate
+            self.cache.put(outcome.person_id, outcome.item, verify_result, ttl)
+            with self._async_lock:
+                self._async_pending.discard((outcome.person_id, outcome.item))
+
+    def close(self) -> None:
+        self._async_stop.set()
+        if self.async_verifier_enabled:
+            try:
+                self._async_in_q.put_nowait(None)
+            except queue.Full:
+                pass
+        if self._async_thread is not None:
+            self._async_thread.join(timeout=1.5)
 
     def _build_active_alerts(self) -> List[AlertPayload]:
         alerts: List[AlertPayload] = []
@@ -722,6 +960,13 @@ class MonitoringPipeline:
             ppe_model=self._ppe_model_path,
             ppe_task=self._ppe_task,
             ppe_fusion_mode=self.ppe_fusion_mode,
+            adaptive_scheduler_enabled=self.adaptive_scheduler_enabled,
+            adaptive_detect_frames=self._adaptive_detect_frames,
+            adaptive_reuse_frames=self._adaptive_reuse_frames,
+            async_verifier_enabled=self.async_verifier_enabled,
+            async_verifier_enqueued=self._async_enqueued,
+            async_verifier_completed=self._async_completed,
+            async_verifier_dropped=self._async_dropped,
             compute_monitor_enabled=compute.enabled,
             pose_infer_per_sec=compute.pose_infer_per_sec,
             ppe_infer_per_sec=compute.ppe_infer_per_sec,
@@ -957,12 +1202,13 @@ class MonitoringPipeline:
         model = getattr(self.verifier, "model")
         imgsz = getattr(self.verifier, "imgsz", self.config["inference"]["imgsz"])
 
-        results = model.predict(
-            source=frame,
-            conf=self.ensemble_yoloe_conf,
-            imgsz=imgsz,
-            verbose=False,
-        )
+        with self._verifier_infer_lock:
+            results = model.predict(
+                source=frame,
+                conf=self.ensemble_yoloe_conf,
+                imgsz=imgsz,
+                verbose=False,
+            )
         if not results:
             return []
 

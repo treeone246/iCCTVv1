@@ -123,6 +123,23 @@ verifier:
       positive: "industrial coverall jumpsuit"
       negative: "not wearing coverall"
 
+adaptive_scheduler:
+  # Reduce detector load by reusing PPE detections between frames.
+  enabled: false
+  # Run full PPE detection every N frames.
+  ppe_interval_frames: 2
+  # Hard cap to avoid stale reuse.
+  max_detection_staleness_frames: 4
+  # Force fresh detection when new track IDs appear.
+  force_on_new_track: true
+
+async_verifier:
+  # Offload verifier crop checks to background worker so frame loop is not blocked.
+  enabled: false
+  queue_max: 512
+  # If queue is full, keep frame loop non-blocking and emit queue_full reason.
+  drop_if_full: true
+
 association:
   keypoint_conf_floor: 0.40
   held_distance_ratio: 1.2

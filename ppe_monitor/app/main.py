@@ -138,6 +138,7 @@ async def lifespan(app: FastAPI):
         if app.state.deepstream_runner is not None:
             app.state.deepstream_runner.stop()
         pipeline.event_writer.close()
+        pipeline.close()
         if video_source is not None:
             video_source.close()
         print(json.dumps({"event_type": "app_stopped"}))

@@ -112,6 +112,13 @@ class MetricsPayload(BaseModel):
     ppe_model: str = ""
     ppe_task: str = ""
     ppe_fusion_mode: str = "nms"
+    adaptive_scheduler_enabled: bool = False
+    adaptive_detect_frames: int = 0
+    adaptive_reuse_frames: int = 0
+    async_verifier_enabled: bool = False
+    async_verifier_enqueued: int = 0
+    async_verifier_completed: int = 0
+    async_verifier_dropped: int = 0
     compute_monitor_enabled: bool = False
     pose_infer_per_sec: float = 0.0
     ppe_infer_per_sec: float = 0.0

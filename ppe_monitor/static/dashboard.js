@@ -215,6 +215,7 @@ function renderPPEStatusDashboard(persons, metrics) {
     <div class="ppe-status-stats">${modelName} (${metrics.ppe_task || "detect"}, fusion:${metrics.ppe_fusion_mode || "nms"})</div>
     <div class="ppe-status-stats">raw/frame BEST2:${metrics.ppe_primary_raw ?? 0} YOLOE:${metrics.verifier_aux_raw ?? 0} merged:${metrics.ppe_merged ?? 0}</div>
     <div class="ppe-status-stats">infer calls Pose:${metrics.pose_infer_calls ?? 0} BEST2:${metrics.ppe_infer_calls ?? 0} YOLOE(aux):${metrics.verifier_aux_infer_calls ?? 0} verifier(crop):${metrics.verifier_crop_infer_calls ?? 0} ollama:${metrics.verifier_ollama_calls ?? 0}</div>
+    <div class="ppe-status-stats">adaptive scheduler:${metrics.adaptive_scheduler_enabled ? "on" : "off"} detect:${metrics.adaptive_detect_frames ?? 0} reuse:${metrics.adaptive_reuse_frames ?? 0} | async verifier:${metrics.async_verifier_enabled ? "on" : "off"} queued:${metrics.async_verifier_enqueued ?? 0} done:${metrics.async_verifier_completed ?? 0} drop:${metrics.async_verifier_dropped ?? 0}</div>
   `;
   ppeStatusPanel.appendChild(runtimeCard);
 

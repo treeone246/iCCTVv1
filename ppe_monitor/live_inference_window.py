@@ -719,6 +719,7 @@ def main() -> None:
     finally:
         performance_logger.close()
         pipeline.event_writer.close()
+        pipeline.close()
 
 
 if __name__ == "__main__":
