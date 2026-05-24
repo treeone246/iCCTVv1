@@ -81,6 +81,8 @@ detector_ensemble:
 verifier:
   backend: ollama_hybrid
   enable_vlm: true
+  strict_spatial_require_bound: true
+  strict_spatial_items: [helmet]
   periodic_recheck_enabled: false
   periodic_recheck_seconds: 60.0
   periodic_items: [helmet, goggles, gloves, boots, coverall]

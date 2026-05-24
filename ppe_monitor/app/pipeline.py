@@ -173,6 +173,12 @@ class MonitoringPipeline:
             str(k): float(v)
             for k, v in dict(low_conf_esc_cfg.get("per_item_thresholds", {})).items()
         }
+        self.strict_spatial_items = set(
+            str(x) for x in verifier_cfg.get("strict_spatial_items", ["helmet"])
+        )
+        self.strict_spatial_require_bound = bool(
+            verifier_cfg.get("strict_spatial_require_bound", True)
+        )
         self.periodic_verifier_enabled = bool(verifier_cfg.get("periodic_recheck_enabled", True))
         self.periodic_verifier_seconds = float(verifier_cfg.get("periodic_recheck_seconds", 60.0))
         self.periodic_verifier_items = set(
@@ -727,6 +733,19 @@ class MonitoringPipeline:
             bind=bind,
             positive_conf=vctx.positive_conf,
         )
+        # Strict spatial items (e.g. helmet) should not be rescued by verifier
+        # when they are not keypoint-bound.
+        if (
+            self.strict_spatial_require_bound
+            and item in self.strict_spatial_items
+            and base_classification == Classification.VIOLATION_TENTATIVE
+        ):
+            return ItemDecision(
+                Classification.VIOLATION,
+                "strict_spatial_not_bound",
+                positive_conf=vctx.positive_conf,
+                negative_conf=vctx.negative_conf,
+            )
         periodic_due = self._is_periodic_verifier_due(
             person_id=person.person_id,
             item=item,
