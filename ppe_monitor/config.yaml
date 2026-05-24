@@ -61,6 +61,11 @@ inference:
   conf_threshold_ppe: 0.22
   conf_threshold_verifier: 0.45
   per_item_conf_thresholds:
+    goggles: 0.28
+    gloves: 0.30
+    boots: 0.30
+    no_gloves: 0.55
+    no_boots: 0.58
     harness: 0.70
   keypoint_conf_floor: 0.30
   imgsz: 640
@@ -76,6 +81,9 @@ detector_ensemble:
 verifier:
   backend: ollama_hybrid
   enable_vlm: true
+  periodic_recheck_enabled: true
+  periodic_recheck_seconds: 60.0
+  periodic_items: [helmet, goggles, gloves, boots, coverall]
   ollama:
     host: "http://127.0.0.1:11434"
     model: "qwen2.5vl:3b"
@@ -88,9 +96,9 @@ verifier:
     ambiguity_margin: 0.12
     low_conf_threshold: 0.40
   low_conf_escalation:
-    enabled: true
+    enabled: false
     threshold: 0.40
-    items: [gloves]
+    items: []
     per_item_thresholds:
       gloves: 0.40
   # Controls when positive/negative detector classes should escalate to VLM.
@@ -200,6 +208,18 @@ status_stability:
     helmet:
       violation_enter_frames: 7
       indeterminate_enter_frames: 12
+    goggles:
+      violation_enter_frames: 8
+      compliant_clear_violation_frames: 4
+      indeterminate_enter_frames: 14
+    gloves:
+      violation_enter_frames: 8
+      compliant_clear_violation_frames: 4
+      indeterminate_enter_frames: 14
+    boots:
+      violation_enter_frames: 8
+      compliant_clear_violation_frames: 4
+      indeterminate_enter_frames: 14
     coverall:
       violation_enter_frames: 7
       indeterminate_enter_frames: 12
@@ -207,19 +227,25 @@ status_stability:
 compliance_memory:
   # Prior bias: workers are usually compliant, avoid flipping on noisy low-confidence detections.
   assume_compliant: true
+  strict_items: [coverall, helmet]
   prior_compliant_score: 5.0
   decay: 0.96
   positive_gain: 1.0
-  negative_gain: 1.25
+  negative_gain: 1.10
   compliant_bonus: 1.0
   violation_penalty: 1.2
   indeterminate_decay: 0.985
   ok_threshold: 4.0
   bad_threshold: -4.0
   # Non-compliance gate: negative evidence must dominate positive evidence.
-  dominance_ratio: 1.15
-  dominance_min_negative: 2.5
+  dominance_ratio: 1.30
+  dominance_min_negative: 3.5
   max_abs_score: 20.0
+  # Sticky compliant prior for noisy PPE classes.
+  sticky_compliant_enabled: true
+  sticky_items: [goggles, gloves, boots]
+  sticky_positive_memory_min: 2.5
+  sticky_negative_conf_max: 0.45
 
 required_ppe:
   - helmet

@@ -173,6 +173,12 @@ class MonitoringPipeline:
             str(k): float(v)
             for k, v in dict(low_conf_esc_cfg.get("per_item_thresholds", {})).items()
         }
+        self.periodic_verifier_enabled = bool(verifier_cfg.get("periodic_recheck_enabled", True))
+        self.periodic_verifier_seconds = float(verifier_cfg.get("periodic_recheck_seconds", 60.0))
+        self.periodic_verifier_items = set(
+            str(x) for x in verifier_cfg.get("periodic_items", self.required_ppe)
+        )
+        self._last_periodic_verifier_ts: Dict[Tuple[int, str], float] = {}
         self.vlm_label_polarity: Dict[str, Dict[str, List[str]]] = {
             "helmet": {"positive": ["helmet"], "negative": []},
             "goggles": {"positive": ["goggles"], "negative": []},
@@ -253,6 +259,15 @@ class MonitoringPipeline:
         self.mem_dominance_ratio = float(mem_cfg.get("dominance_ratio", 1.15))
         self.mem_dominance_min_negative = float(mem_cfg.get("dominance_min_negative", 2.5))
         self.mem_max_abs_score = float(mem_cfg.get("max_abs_score", 20.0))
+        self.mem_strict_items = set(str(x) for x in mem_cfg.get("strict_items", ["coverall", "helmet"]))
+        # Sticky compliant prior: for noisy items, hold COMPLIANT unless we have
+        # sufficiently strong negative evidence.
+        self.sticky_compliant_enabled = bool(mem_cfg.get("sticky_compliant_enabled", True))
+        self.sticky_items = set(
+            str(x) for x in mem_cfg.get("sticky_items", ["goggles", "gloves", "boots"])
+        )
+        self.sticky_positive_memory_min = float(mem_cfg.get("sticky_positive_memory_min", 2.5))
+        self.sticky_negative_conf_max = float(mem_cfg.get("sticky_negative_conf_max", 0.45))
         self.event_writer = EventStreamWriter(config)
         self.face_gate = SCRFDFaceGate(config)
 
@@ -468,17 +483,29 @@ class MonitoringPipeline:
         key = (person_id, item)
         tracker = self._stable_states.get(key)
         if tracker is None:
-            initial_stable = Classification.COMPLIANT if self.mem_assume_compliant else raw_state
-            initial_score = self.mem_prior_score if self.mem_assume_compliant else 0.0
+            if item in self.mem_strict_items:
+                initial_stable = raw_state
+                initial_score = 0.0
+            else:
+                initial_stable = Classification.COMPLIANT if self.mem_assume_compliant else raw_state
+                initial_score = self.mem_prior_score if self.mem_assume_compliant else 0.0
             tracker = StableStateTracker(stable=initial_stable, score=initial_score)
             self._stable_states[key] = tracker
             # If we received a strong negative first frame, allow immediate evaluation below.
 
-        if raw_state == Classification.COMPLIANT:
+        state_for_tracker = self._apply_sticky_compliant_prior(
+            item=item,
+            raw_state=raw_state,
+            tracker=tracker,
+            positive_conf=positive_conf,
+            negative_conf=negative_conf,
+        )
+
+        if state_for_tracker == Classification.COMPLIANT:
             tracker.compliant_streak += 1
             tracker.violation_streak = 0
             tracker.indeterminate_streak = 0
-        elif raw_state == Classification.VIOLATION:
+        elif state_for_tracker == Classification.VIOLATION:
             tracker.violation_streak += 1
             tracker.compliant_streak = 0
             tracker.indeterminate_streak = 0
@@ -491,9 +518,9 @@ class MonitoringPipeline:
         tracker.positive_memory = tracker.positive_memory * self.mem_decay + max(0.0, positive_conf) * self.mem_positive_gain
         tracker.negative_memory = tracker.negative_memory * self.mem_decay + max(0.0, negative_conf) * self.mem_negative_gain
 
-        if raw_state == Classification.COMPLIANT:
+        if state_for_tracker == Classification.COMPLIANT:
             tracker.score += self.mem_compliant_bonus
-        elif raw_state == Classification.VIOLATION:
+        elif state_for_tracker == Classification.VIOLATION:
             tracker.score -= self.mem_violation_penalty
         else:
             tracker.score *= self.mem_indeterminate_decay
@@ -555,6 +582,32 @@ class MonitoringPipeline:
         tracker.stable = stable
         return stable
 
+    def _apply_sticky_compliant_prior(
+        self,
+        *,
+        item: str,
+        raw_state: Classification,
+        tracker: StableStateTracker,
+        positive_conf: float,
+        negative_conf: float,
+    ) -> Classification:
+        """Avoid flipping stable compliant items to violation on weak evidence."""
+        if not self.sticky_compliant_enabled:
+            return raw_state
+        if item not in self.sticky_items:
+            return raw_state
+        if raw_state != Classification.VIOLATION:
+            return raw_state
+        if tracker.stable != Classification.COMPLIANT:
+            return raw_state
+        if tracker.positive_memory < self.sticky_positive_memory_min:
+            return raw_state
+        if float(negative_conf) > self.sticky_negative_conf_max:
+            return raw_state
+        if float(negative_conf) > float(positive_conf):
+            return raw_state
+        return Classification.INDETERMINATE
+
     def _stability_threshold(self, item: str, key: str, default: int) -> int:
         item_cfg = self.stable_per_item.get(item, {})
         try:
@@ -567,6 +620,9 @@ class MonitoringPipeline:
         stale_keys = [k for k in self._stable_states.keys() if k[0] not in active_ids]
         for key in stale_keys:
             self._stable_states.pop(key, None)
+        stale_periodic = [k for k in self._last_periodic_verifier_ts.keys() if k[0] not in active_ids]
+        for key in stale_periodic:
+            self._last_periodic_verifier_ts.pop(key, None)
         if self.async_verifier_enabled:
             with self._async_lock:
                 stale_pending = [k for k in self._async_pending if k[0] not in active_ids]
@@ -671,7 +727,17 @@ class MonitoringPipeline:
             bind=bind,
             positive_conf=vctx.positive_conf,
         )
-        needs_verifier = base_classification == Classification.VIOLATION_TENTATIVE or ambiguous or low_conf_escalated
+        periodic_due = self._is_periodic_verifier_due(
+            person_id=person.person_id,
+            item=item,
+            now_ts=time.time(),
+        )
+        needs_verifier = (
+            base_classification == Classification.VIOLATION_TENTATIVE
+            or ambiguous
+            or low_conf_escalated
+            or periodic_due
+        )
 
         if not needs_verifier:
             if base_classification == Classification.COMPLIANT:
@@ -703,7 +769,7 @@ class MonitoringPipeline:
             )
 
         cached = self.cache.get(person.person_id, item)
-        if cached is not None:
+        if cached is not None and not periodic_due:
             final_cls, reason = self._classification_from_verdict(cached.verdict, source="cache")
             return ItemDecision(
                 final_cls,
@@ -785,6 +851,7 @@ class MonitoringPipeline:
         else:
             ttl = self.ttl_indeterminate
         self.cache.put(person_id, item, verify_result, ttl)
+        self._last_periodic_verifier_ts[(int(person_id), str(item))] = time.time()
         return verify_result
 
     def _queue_async_verifier_task(
@@ -878,8 +945,27 @@ class MonitoringPipeline:
             else:
                 ttl = self.ttl_indeterminate
             self.cache.put(outcome.person_id, outcome.item, verify_result, ttl)
+            self._last_periodic_verifier_ts[(int(outcome.person_id), str(outcome.item))] = time.time()
             with self._async_lock:
                 self._async_pending.discard((outcome.person_id, outcome.item))
+
+    def _is_periodic_verifier_due(
+        self,
+        *,
+        person_id: int,
+        item: str,
+        now_ts: float,
+    ) -> bool:
+        """Return True when verifier should refresh this person/item decision."""
+        if not self.periodic_verifier_enabled:
+            return False
+        if item not in self.periodic_verifier_items:
+            return False
+        interval = max(1.0, float(self.periodic_verifier_seconds))
+        last_ts = self._last_periodic_verifier_ts.get((int(person_id), str(item)))
+        if last_ts is None:
+            return True
+        return (float(now_ts) - float(last_ts)) >= interval
 
     def close(self) -> None:
         self._async_stop.set()
