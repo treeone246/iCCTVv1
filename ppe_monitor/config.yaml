@@ -303,7 +303,7 @@ event_stream:
   queue_max: 2000
 
 behavior_agent:
-  enabled: false
+  enabled: true
   interval_seconds: 10
   events_jsonl: "outputs/detection_events.jsonl"
   output_dir: "outputs/behavior_agent"
