@@ -81,14 +81,14 @@ detector_ensemble:
 verifier:
   backend: ollama_hybrid
   enable_vlm: true
-  periodic_recheck_enabled: true
+  periodic_recheck_enabled: false
   periodic_recheck_seconds: 60.0
   periodic_items: [helmet, goggles, gloves, boots, coverall]
   ollama:
     host: "http://127.0.0.1:11434"
     model: "qwen2.5vl:3b"
     timeout_seconds: 8.0
-    temperature: 0.0
+    temperature: 0.4
     jpeg_backend: auto
     jpeg_quality: 85
   conflict_resolver:
@@ -96,7 +96,7 @@ verifier:
     ambiguity_margin: 0.12
     low_conf_threshold: 0.40
   low_conf_escalation:
-    enabled: false
+    enabled: true
     threshold: 0.40
     items: []
     per_item_thresholds:
@@ -311,7 +311,7 @@ face_gate:
   # shadow_mode logs observations without changing decision.
   shadow_mode: true
   # enforce applies gate result to output classification.
-  enforce: false
+  enforce: true
   log_enabled: true
   log_every_n_frames: 10
   # Current backend expects SCRFD ONNX model.
