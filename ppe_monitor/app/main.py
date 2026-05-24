@@ -23,6 +23,7 @@ from .ppe_detector import build_alias_index
 from .runtime_backend import get_runtime_backend
 from .runtime_acceleration import summarize_runtime_acceleration
 from .startup_check import load_runtime_components
+from .stream_guard import StreamClientGate
 from .video_source import VideoSource
 
 
@@ -33,6 +34,23 @@ def load_config() -> dict:
     config_path = PROJECT_ROOT / "config.yaml"
     with config_path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _parse_bool_query(value: str | None) -> bool | None:
+    """Parse bool-like websocket query values.
+
+    Returns:
+    - True / False when recognized
+    - None when value is unset or unrecognized
+    """
+    if value is None:
+        return None
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return None
 
 
 @asynccontextmanager
@@ -121,6 +139,10 @@ async def lifespan(app: FastAPI):
     app.state.metrics_exporter = PrometheusMetricsExporter(enabled=bool(prom_cfg.get("enabled", True)))
     app.state.jetson_bridge = JetsonExporterBridge.from_app_config(config)
     app.state.performance_logger = PerformanceLogWriter(config)
+    dashboard_cfg = config.get("dashboard", {}) or {}
+    max_stream_clients = max(1, int(dashboard_cfg.get("max_stream_clients", 1)))
+    app.state.stream_jpeg_enabled = bool(dashboard_cfg.get("stream_jpeg_enabled", True))
+    app.state.stream_gate = StreamClientGate(max_clients=max_stream_clients)
 
     behavior_cfg = config.get("behavior_agent", {}) or {}
     if bool(behavior_cfg.get("enabled", False)):
@@ -158,11 +180,33 @@ async def health() -> dict:
 
 @app.websocket("/ws/stream")
 async def ws_stream(websocket: WebSocket) -> None:
+    gate = getattr(app.state, "stream_gate", None)
+    gate_acquired = False
+    if gate is not None:
+        gate_acquired = await gate.try_acquire()
+        if not gate_acquired:
+            snapshot = await gate.snapshot()
+            await websocket.accept()
+            await websocket.send_json(
+                {
+                    "event_type": "stream_rejected",
+                    "reason": "max_stream_clients_reached",
+                    "active_clients": snapshot["active_clients"],
+                    "max_clients": snapshot["max_clients"],
+                }
+            )
+            await websocket.close(code=1013, reason="stream_busy")
+            return
+
     await websocket.accept()
     frame_id = 0
     backend = str(getattr(app.state, "runtime_backend", "python"))
     target_fps = float(app.state.config.get("video", {}).get("target_fps", 20))
     jpeg_interval_frames = max(1, int(app.state.config.get("dashboard", {}).get("jpeg_interval_frames", 1)))
+    jpeg_enabled = bool(getattr(app.state, "stream_jpeg_enabled", True))
+    jpeg_query = _parse_bool_query(websocket.query_params.get("jpeg"))
+    if jpeg_query is not None:
+        jpeg_enabled = jpeg_query
     if backend == "deepstream":
         target_fps = float(app.state.config.get("deepstream", {}).get("target_fps", target_fps))
     frame_interval = 1.0 / max(1.0, target_fps)
@@ -173,7 +217,7 @@ async def ws_stream(websocket: WebSocket) -> None:
             now = time.perf_counter()
             send_jpeg_for_frame = (frame_id % jpeg_interval_frames) == 0
             deepstream_emit_jpeg = bool(getattr(app.state, "deepstream_emit_jpeg", True))
-            include_stream_jpeg = send_jpeg_for_frame and (
+            include_stream_jpeg = jpeg_enabled and send_jpeg_for_frame and (
                 backend != "deepstream" or deepstream_emit_jpeg
             )
             if backend == "deepstream":
@@ -266,6 +310,9 @@ async def ws_stream(websocket: WebSocket) -> None:
             last_tick = now
     except WebSocketDisconnect:
         return
+    finally:
+        if gate_acquired and gate is not None:
+            await gate.release()
 
 
 @app.get("/api/behavior-agent/latest")

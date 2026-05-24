@@ -305,6 +305,8 @@ def load_runtime_components(
                 model=str(ollama_cfg.get("model", "qwen2.5vl:3b")),
                 timeout_seconds=float(ollama_cfg.get("timeout_seconds", 8.0)),
                 temperature=float(ollama_cfg.get("temperature", 0.0)),
+                jpeg_backend=str(ollama_cfg.get("jpeg_backend", "auto")),
+                jpeg_quality=int(ollama_cfg.get("jpeg_quality", 85)),
             )
             conflict_cfg = verifier_cfg.get("conflict_resolver", {})
             verifier = HybridVerifier(

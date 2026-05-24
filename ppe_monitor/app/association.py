@@ -1,8 +1,9 @@
 """Spatial PPE-to-limb association rules based on pose keypoints."""
 
 from dataclasses import dataclass
-from math import hypot
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 from .schemas import Classification
 
@@ -50,7 +51,10 @@ class PPERule:
             return BindResult(bound=False, held=False, confidence=0.0, reason="expected_keypoint_not_visible")
 
         center = bbox_center(ppe_bbox)
-        min_expected_distance = min(distance(center, pt) for pt in expected_points)
+        expected_np = np.asarray(expected_points, dtype=np.float32)
+        dx = expected_np[:, 0] - float(center[0])
+        dy = expected_np[:, 1] - float(center[1])
+        min_expected_distance = float(np.min(np.hypot(dx, dy)))
 
         bound = False
         confidence = 0.0
@@ -74,7 +78,10 @@ class PPERule:
                 if w in keypoints and keypoint_confidences.get(w, 0.0) >= self.keypoint_conf_floor
             ]
             if wrist_points:
-                min_wrist_distance = min(distance(center, wrist) for wrist in wrist_points)
+                wrists_np = np.asarray(wrist_points, dtype=np.float32)
+                wdx = wrists_np[:, 0] - float(center[0])
+                wdy = wrists_np[:, 1] - float(center[1])
+                min_wrist_distance = float(np.min(np.hypot(wdx, wdy)))
                 if min_wrist_distance * self.held_distance_ratio < min_expected_distance:
                     held = True
 
@@ -227,7 +234,7 @@ def bbox_center(box: BBox) -> Point:
 
 
 def distance(a: Point, b: Point) -> float:
-    return hypot(a[0] - b[0], a[1] - b[1])
+    return float(np.hypot(a[0] - b[0], a[1] - b[1]))
 
 
 def iou(a: BBox, b: BBox) -> float:

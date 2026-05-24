@@ -9,10 +9,10 @@ from typing import Any, Dict, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-import cv2
 import numpy as np
 from ultralytics import YOLO
 
+from .jpeg_utils import encode_jpeg_bytes
 from .schemas import VerifierResult, VerifierVerdict
 
 
@@ -98,11 +98,15 @@ class OllamaVLMClient:
         model: str,
         timeout_seconds: float = 8.0,
         temperature: float = 0.0,
+        jpeg_backend: str = "auto",
+        jpeg_quality: int = 85,
     ) -> None:
         self.host = host.rstrip("/")
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.temperature = temperature
+        self.jpeg_backend = str(jpeg_backend or "auto").lower()
+        self.jpeg_quality = int(jpeg_quality)
 
     def classify(
         self,
@@ -112,8 +116,16 @@ class OllamaVLMClient:
         person_crop: np.ndarray,
         item_crop: np.ndarray,
     ) -> VerifierResult:
-        person_b64 = _encode_jpeg_base64(person_crop)
-        item_b64 = _encode_jpeg_base64(item_crop)
+        person_b64 = _encode_jpeg_base64(
+            person_crop,
+            quality=self.jpeg_quality,
+            backend=self.jpeg_backend,
+        )
+        item_b64 = _encode_jpeg_base64(
+            item_crop,
+            quality=self.jpeg_quality,
+            backend=self.jpeg_backend,
+        )
         if person_b64 is None or item_b64 is None:
             return VerifierResult(verdict=VerifierVerdict.INDETERMINATE, score=0.0, source="ollama")
 
@@ -252,13 +264,13 @@ def _normalize_label(value: str) -> str:
     return value.strip().lower().replace("-", "_").replace(" ", "_")
 
 
-def _encode_jpeg_base64(image: np.ndarray) -> Optional[str]:
+def _encode_jpeg_base64(image: np.ndarray, quality: int = 85, backend: str = "auto") -> Optional[str]:
     if image is None or image.size == 0:
         return None
-    ok, encoded = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-    if not ok:
+    encoded = encode_jpeg_bytes(image, quality=int(quality), backend=str(backend))
+    if encoded is None:
         return None
-    return base64.b64encode(bytes(encoded)).decode("ascii")
+    return base64.b64encode(encoded).decode("ascii")
 
 
 def _parse_json_object(text: str) -> Dict[str, Any]:

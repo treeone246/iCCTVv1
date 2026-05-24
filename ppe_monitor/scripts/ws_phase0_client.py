@@ -10,6 +10,7 @@ import statistics
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import websockets
 
@@ -27,6 +28,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--connect-timeout", type=float, default=30.0)
     parser.add_argument("--read-timeout", type=float, default=5.0)
+    parser.add_argument(
+        "--no-jpeg",
+        action="store_true",
+        help="Request JSON-only stream by adding `?jpeg=0` to websocket URL.",
+    )
     return parser.parse_args()
 
 
@@ -35,6 +41,13 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except Exception:
         return default
+
+
+def _with_query_param(url: str, key: str, value: str) -> str:
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query[key] = value
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
 
 
 async def _consume(args: argparse.Namespace) -> dict[str, Any]:
@@ -56,11 +69,12 @@ async def _consume(args: argparse.Namespace) -> dict[str, Any]:
         metrics_fp = Path(args.metrics_jsonl).open("w", encoding="utf-8")
 
     connect_deadline = time.perf_counter() + max(1.0, float(args.connect_timeout))
+    ws_url = _with_query_param(args.url, "jpeg", "0") if args.no_jpeg else args.url
     ws = None
     while ws is None and time.perf_counter() < connect_deadline:
         connect_attempts += 1
         try:
-            ws = await websockets.connect(args.url, max_size=None)
+            ws = await websockets.connect(ws_url, max_size=None)
         except Exception:
             await asyncio.sleep(0.5)
 
@@ -111,6 +125,9 @@ async def _consume(args: argparse.Namespace) -> dict[str, Any]:
                         )
                         + "\n"
                     )
+            elif payload.get("event_type") == "stream_rejected":
+                reason = payload.get("reason", "stream_rejected")
+                raise RuntimeError(f"Server rejected stream: {reason}")
     finally:
         if metrics_fp is not None:
             metrics_fp.close()
@@ -139,12 +156,25 @@ async def _consume(args: argparse.Namespace) -> dict[str, Any]:
 
 async def _main_async() -> int:
     args = parse_args()
-    summary = await _consume(args)
+    rc = 0
+    try:
+        summary = await _consume(args)
+    except Exception as exc:
+        rc = 1
+        summary = {
+            "error": str(exc),
+            "url": args.url,
+            "duration_s": float(args.duration),
+            "connect_timeout_s": float(args.connect_timeout),
+            "read_timeout_s": float(args.read_timeout),
+            "requested_no_jpeg": bool(args.no_jpeg),
+        }
+
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, indent=2))
-    return 0
+    return rc
 
 
 def main() -> None:

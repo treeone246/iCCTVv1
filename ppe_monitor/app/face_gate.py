@@ -19,6 +19,8 @@ try:
 except Exception:  # pragma: no cover
     ort = None
 
+from .gpu_utils import cv2_cuda_available, get_cupy_module, torchvision_nms_available
+
 
 @dataclass
 class FaceGateObservation:
@@ -48,6 +50,9 @@ class SCRFDFaceGate:
         self.nms_iou = float(fg_cfg.get("nms_iou_threshold", 0.4))
         self.score_threshold = float(fg_cfg.get("score_threshold", 0.35))
         self.model_path = str(fg_cfg.get("scrfd_model_path", "models/det_2.5g.onnx"))
+        self.gpu_preprocess = bool(fg_cfg.get("gpu_preprocess", True))
+        self.decode_backend = str(fg_cfg.get("decode_backend", "auto")).lower()
+        self.nms_backend = str(fg_cfg.get("nms_backend", "auto")).lower()
 
         self._session = None
         self._ready = False
@@ -55,6 +60,9 @@ class SCRFDFaceGate:
         self._last_obs: Dict[int, FaceGateObservation] = {}
         self._last_ts: Dict[int, float] = {}
         self.cache_seconds = float(fg_cfg.get("cache_seconds", 0.2))
+        self._cv2_cuda_ready = self.gpu_preprocess and cv2_cuda_available()
+        self._cupy_ready = get_cupy_module() is not None and self.decode_backend in {"auto", "cupy"}
+        self._torchvision_nms_ready = torchvision_nms_available() and self.nms_backend in {"auto", "torchvision"}
 
         if not self.enabled:
             return
@@ -119,7 +127,6 @@ class SCRFDFaceGate:
             self._cache(person_id, now, obs)
             return obs
 
-        dets = self._nms(dets, self.nms_iou)
         best = max(dets, key=lambda d: d[4])
         bx1, by1, bx2, by2, conf = best
         area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
@@ -166,10 +173,7 @@ class SCRFDFaceGate:
         return frame[iy1:iy2, ix1:ix2], (float(ix1), float(iy1))
 
     def _run_scrfd(self, crop_bgr: np.ndarray) -> List[Tuple[float, float, float, float, float]]:
-        img = cv2.resize(crop_bgr, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
-        inp = img.astype(np.float32)
-        inp = (inp - 127.5) / 128.0
-        inp = np.transpose(inp, (2, 0, 1))[None, :, :, :]
+        inp = self._preprocess_crop(crop_bgr)
 
         outputs = self._session.run(None, {self._input_name: inp})  # type: ignore[attr-defined]
         out_map = {name: arr for name, arr in zip(self._output_names, outputs)}  # type: ignore[attr-defined]
@@ -184,14 +188,46 @@ class SCRFDFaceGate:
             elif "bbox" in lname:
                 stride_to_bboxes[stride] = arr
 
-        dets: List[Tuple[float, float, float, float, float]] = []
+        det_chunks: List[np.ndarray] = []
         sx = crop_bgr.shape[1] / float(self.input_size)
         sy = crop_bgr.shape[0] / float(self.input_size)
         for stride in sorted(set(stride_to_scores.keys()) & set(stride_to_bboxes.keys())):
             score_t = stride_to_scores[stride]
             bbox_t = stride_to_bboxes[stride]
-            dets.extend(self._decode_stride_outputs(score_t, bbox_t, stride=stride, sx=sx, sy=sy))
-        return dets
+            det_arr = self._decode_stride_outputs(score_t, bbox_t, stride=stride, sx=sx, sy=sy)
+            if det_arr.size > 0:
+                det_chunks.append(det_arr)
+        if not det_chunks:
+            return []
+        dets = np.concatenate(det_chunks, axis=0)
+        dets = self._nms(dets, self.nms_iou)
+        if dets.size == 0:
+            return []
+        return [
+            (float(row[0]), float(row[1]), float(row[2]), float(row[3]), float(row[4]))
+            for row in dets
+        ]
+
+    def _preprocess_crop(self, crop_bgr: np.ndarray) -> np.ndarray:
+        img: np.ndarray
+        if self._cv2_cuda_ready:
+            try:
+                gpu = cv2.cuda_GpuMat()
+                gpu.upload(crop_bgr)
+                gpu_resized = cv2.cuda.resize(
+                    gpu,
+                    (self.input_size, self.input_size),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                img = gpu_resized.download()
+            except Exception:
+                img = cv2.resize(crop_bgr, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
+        else:
+            img = cv2.resize(crop_bgr, (self.input_size, self.input_size), interpolation=cv2.INTER_LINEAR)
+
+        inp = img.astype(np.float32)
+        inp = (inp - 127.5) / 128.0
+        return np.transpose(inp, (2, 0, 1))[None, :, :, :]
 
     def _decode_stride_outputs(
         self,
@@ -201,17 +237,14 @@ class SCRFDFaceGate:
         stride: int,
         sx: float,
         sy: float,
-    ) -> List[Tuple[float, float, float, float, float]]:
-        dets: List[Tuple[float, float, float, float, float]] = []
+    ) -> np.ndarray:
+        """Vectorized SCRFD stride decode with optional CuPy backend."""
         if score_t.ndim != 4 or bbox_t.ndim != 4:
-            return dets
-        # Typical SCRFD format:
-        # score: [1, A, H, W] where A is anchors (often 2)
-        # bbox : [1, A*4, H, W]
+            return np.empty((0, 5), dtype=np.float32)
         _, s_c, s_h, s_w = score_t.shape
         _, b_c, b_h, b_w = bbox_t.shape
         if s_h != b_h or s_w != b_w or s_h <= 0 or s_w <= 0:
-            return dets
+            return np.empty((0, 5), dtype=np.float32)
 
         anchor_n = max(1, b_c // 4)
         score_view = score_t[0]
@@ -223,41 +256,151 @@ class SCRFDFaceGate:
             scores = score_view[:anchor_n]
 
         bbox_view = bbox_t[0].reshape(anchor_n, 4, b_h, b_w)
-        for a in range(anchor_n):
-            for y in range(b_h):
-                for x in range(b_w):
-                    conf = float(scores[a, y, x])
-                    if conf < self.score_threshold:
-                        continue
-                    l = float(bbox_view[a, 0, y, x]) * stride
-                    t = float(bbox_view[a, 1, y, x]) * stride
-                    r = float(bbox_view[a, 2, y, x]) * stride
-                    b = float(bbox_view[a, 3, y, x]) * stride
-                    cx = (x + 0.5) * stride
-                    cy = (y + 0.5) * stride
-                    x1 = (cx - l) * sx
-                    y1 = (cy - t) * sy
-                    x2 = (cx + r) * sx
-                    y2 = (cy + b) * sy
-                    if x2 <= x1 or y2 <= y1:
-                        continue
-                    dets.append((x1, y1, x2, y2, conf))
-        return dets
+        if self._cupy_ready and self.decode_backend in {"auto", "cupy"}:
+            cp = get_cupy_module()
+            if cp is not None and (anchor_n * b_h * b_w) >= 2048:
+                try:
+                    return self._decode_stride_outputs_cupy(cp, scores, bbox_view, stride, sx, sy)
+                except Exception:
+                    pass
+        return self._decode_stride_outputs_numpy(scores, bbox_view, stride, sx, sy)
 
-    def _nms(self, dets: List[Tuple[float, float, float, float, float]], iou_thresh: float) -> List[Tuple[float, float, float, float, float]]:
-        if not dets:
-            return []
-        dets_sorted = sorted(dets, key=lambda d: d[4], reverse=True)
-        keep: List[Tuple[float, float, float, float, float]] = []
-        while dets_sorted:
-            best = dets_sorted.pop(0)
-            keep.append(best)
-            rem: List[Tuple[float, float, float, float, float]] = []
-            for d in dets_sorted:
-                if _iou(best, d) < iou_thresh:
-                    rem.append(d)
-            dets_sorted = rem
-        return keep
+    def _decode_stride_outputs_numpy(
+        self,
+        scores: np.ndarray,
+        bbox_view: np.ndarray,
+        stride: int,
+        sx: float,
+        sy: float,
+    ) -> np.ndarray:
+        mask = scores >= self.score_threshold
+        if not np.any(mask):
+            return np.empty((0, 5), dtype=np.float32)
+
+        a_idx, y_idx, x_idx = np.where(mask)
+        conf = scores[a_idx, y_idx, x_idx].astype(np.float32)
+        l = bbox_view[a_idx, 0, y_idx, x_idx].astype(np.float32) * float(stride)
+        t = bbox_view[a_idx, 1, y_idx, x_idx].astype(np.float32) * float(stride)
+        r = bbox_view[a_idx, 2, y_idx, x_idx].astype(np.float32) * float(stride)
+        b = bbox_view[a_idx, 3, y_idx, x_idx].astype(np.float32) * float(stride)
+        cx = (x_idx.astype(np.float32) + 0.5) * float(stride)
+        cy = (y_idx.astype(np.float32) + 0.5) * float(stride)
+
+        x1 = (cx - l) * float(sx)
+        y1 = (cy - t) * float(sy)
+        x2 = (cx + r) * float(sx)
+        y2 = (cy + b) * float(sy)
+        valid = (x2 > x1) & (y2 > y1)
+        if not np.any(valid):
+            return np.empty((0, 5), dtype=np.float32)
+
+        return np.stack(
+            [
+                x1[valid],
+                y1[valid],
+                x2[valid],
+                y2[valid],
+                conf[valid],
+            ],
+            axis=1,
+        ).astype(np.float32, copy=False)
+
+    def _decode_stride_outputs_cupy(
+        self,
+        cp: object,
+        scores: np.ndarray,
+        bbox_view: np.ndarray,
+        stride: int,
+        sx: float,
+        sy: float,
+    ) -> np.ndarray:
+        xp = cp  # type: ignore[assignment]
+        score_cp = xp.asarray(scores)
+        bbox_cp = xp.asarray(bbox_view)
+        mask = score_cp >= float(self.score_threshold)
+        if int(mask.any().item()) == 0:
+            return np.empty((0, 5), dtype=np.float32)
+
+        a_idx, y_idx, x_idx = xp.where(mask)
+        conf = score_cp[a_idx, y_idx, x_idx].astype(xp.float32)
+        l = bbox_cp[a_idx, 0, y_idx, x_idx].astype(xp.float32) * float(stride)
+        t = bbox_cp[a_idx, 1, y_idx, x_idx].astype(xp.float32) * float(stride)
+        r = bbox_cp[a_idx, 2, y_idx, x_idx].astype(xp.float32) * float(stride)
+        b = bbox_cp[a_idx, 3, y_idx, x_idx].astype(xp.float32) * float(stride)
+        cx = (x_idx.astype(xp.float32) + xp.float32(0.5)) * float(stride)
+        cy = (y_idx.astype(xp.float32) + xp.float32(0.5)) * float(stride)
+
+        x1 = (cx - l) * float(sx)
+        y1 = (cy - t) * float(sy)
+        x2 = (cx + r) * float(sx)
+        y2 = (cy + b) * float(sy)
+        valid = (x2 > x1) & (y2 > y1)
+        if int(valid.any().item()) == 0:
+            return np.empty((0, 5), dtype=np.float32)
+
+        out_cp = xp.stack(
+            [
+                x1[valid],
+                y1[valid],
+                x2[valid],
+                y2[valid],
+                conf[valid],
+            ],
+            axis=1,
+        )
+        return xp.asnumpy(out_cp).astype(np.float32, copy=False)
+
+    def _nms(self, dets: np.ndarray, iou_thresh: float) -> np.ndarray:
+        if dets.size == 0:
+            return np.empty((0, 5), dtype=np.float32)
+        if self._torchvision_nms_ready:
+            try:
+                keep_idx = self._nms_torchvision(dets, iou_thresh)
+                return dets[keep_idx]
+            except Exception:
+                if self.nms_backend == "torchvision":
+                    return np.empty((0, 5), dtype=np.float32)
+        keep_idx = self._nms_numpy(dets, iou_thresh)
+        return dets[keep_idx]
+
+    def _nms_torchvision(self, dets: np.ndarray, iou_thresh: float) -> np.ndarray:
+        import torch
+        from torchvision.ops import nms as tv_nms
+
+        boxes = torch.as_tensor(dets[:, :4], dtype=torch.float32)
+        scores = torch.as_tensor(dets[:, 4], dtype=torch.float32)
+        keep = tv_nms(boxes, scores, float(iou_thresh))
+        return keep.cpu().numpy().astype(np.int64, copy=False)
+
+    def _nms_numpy(self, dets: np.ndarray, iou_thresh: float) -> np.ndarray:
+        x1 = dets[:, 0]
+        y1 = dets[:, 1]
+        x2 = dets[:, 2]
+        y2 = dets[:, 3]
+        scores = dets[:, 4]
+        areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+        order = scores.argsort()[::-1]
+        keep: List[int] = []
+
+        while order.size > 0:
+            i = int(order[0])
+            keep.append(i)
+            if order.size == 1:
+                break
+
+            rest = order[1:]
+            xx1 = np.maximum(x1[i], x1[rest])
+            yy1 = np.maximum(y1[i], y1[rest])
+            xx2 = np.minimum(x2[i], x2[rest])
+            yy2 = np.minimum(y2[i], y2[rest])
+            inter_w = np.maximum(0.0, xx2 - xx1)
+            inter_h = np.maximum(0.0, yy2 - yy1)
+            inter = inter_w * inter_h
+            denom = areas[i] + areas[rest] - inter
+            iou = np.divide(inter, denom, out=np.zeros_like(inter), where=denom > 0.0)
+            order = rest[iou < float(iou_thresh)]
+
+        return np.asarray(keep, dtype=np.int64)
 
 
 def _extract_stride(name: str) -> Optional[int]:
@@ -281,23 +424,3 @@ def _infer_stride_from_shape(shape: tuple[int, ...], input_size: int) -> int:
     if stride in (8, 16, 32, 64):
         return stride
     return 8
-
-
-def _iou(a: Tuple[float, float, float, float, float], b: Tuple[float, float, float, float, float]) -> float:
-    ax1, ay1, ax2, ay2, _ = a
-    bx1, by1, bx2, by2, _ = b
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    iw = max(0.0, ix2 - ix1)
-    ih = max(0.0, iy2 - iy1)
-    inter = iw * ih
-    if inter <= 0.0:
-        return 0.0
-    a_area = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-    b_area = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-    den = a_area + b_area - inter
-    if den <= 0.0:
-        return 0.0
-    return inter / den

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 
 _TRUE_VALUES = {"1", "true", "yes", "on"}
@@ -26,6 +26,18 @@ def cupy_available() -> bool:
     except Exception:
         return False
     return True
+
+
+@lru_cache(maxsize=1)
+def get_cupy_module() -> Optional[Any]:
+    """Return imported CuPy module when available, else None."""
+    if not cupy_available():
+        return None
+    try:
+        import cupy as cp  # type: ignore
+    except Exception:
+        return None
+    return cp
 
 
 @lru_cache(maxsize=1)
@@ -59,6 +71,19 @@ def nvjpeg_available() -> bool:
     return True
 
 
+@lru_cache(maxsize=1)
+def torchvision_nms_available() -> bool:
+    """Return True when torchvision NMS API is importable."""
+    if force_cpu_enabled():
+        return False
+    try:
+        import torch  # noqa: F401
+        from torchvision.ops import nms  # noqa: F401
+    except Exception:
+        return False
+    return True
+
+
 def summarize_gpu_stack() -> Dict[str, Any]:
     """Summarize GPU helper detection results for diagnostics."""
     return {
@@ -66,11 +91,14 @@ def summarize_gpu_stack() -> Dict[str, Any]:
         "cupy_available": cupy_available(),
         "cv2_cuda_available": cv2_cuda_available(),
         "nvjpeg_available": nvjpeg_available(),
+        "torchvision_nms_available": torchvision_nms_available(),
     }
 
 
 def clear_detection_caches() -> None:
     """Clear cached detection state (useful for tests)."""
     cupy_available.cache_clear()
+    get_cupy_module.cache_clear()
     cv2_cuda_available.cache_clear()
     nvjpeg_available.cache_clear()
+    torchvision_nms_available.cache_clear()

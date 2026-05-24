@@ -9,13 +9,11 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Optional, Set, Tuple
 
-import cv2
 import numpy as np
 
 from .association import (
     AssociationEngine,
     bbox_center,
-    distance as point_distance,
     iou as box_iou,
     torso_bbox,
 )
@@ -23,6 +21,8 @@ from .cache import VerifierCache
 from .compute_monitor import ComputeProfile, estimate_compute_usage
 from .event_stream import EventStreamWriter
 from .face_gate import SCRFDFaceGate
+from .gpu_utils import torchvision_nms_available
+from .jpeg_utils import encode_jpeg_bytes
 from .pose_tracker import PoseTrackerBase, TrackedPerson
 from .ppe_detector import PPEDetection, PPEDetectorBase, build_alias_index, canonicalize_label
 from .schemas import (
@@ -155,6 +155,10 @@ class MonitoringPipeline:
         self.ensemble_iou_nms = float(ens_cfg.get("iou_nms_threshold", 0.5))
         self.ensemble_allow_from_verifier = set(str(x) for x in ens_cfg.get("allowed_items", self.required_ppe))
         self.ppe_fusion_mode = str(ens_cfg.get("fusion_mode", "nms")).lower()
+        self.ensemble_nms_backend = str(ens_cfg.get("nms_backend", "auto")).lower()
+        self._torchvision_nms_ready = (
+            self.ensemble_nms_backend in {"auto", "torchvision"} and torchvision_nms_available()
+        )
 
         verifier_cfg = config.get("verifier", {})
         conflict_cfg = verifier_cfg.get("conflict_resolver", {})
@@ -190,6 +194,7 @@ class MonitoringPipeline:
 
         dash_cfg = config["dashboard"]
         self.jpeg_quality = int(dash_cfg["jpeg_quality"])
+        self.frame_jpeg_backend = str(dash_cfg.get("jpeg_backend", "auto")).lower()
         self.metrics_window_seconds = float(dash_cfg["metrics_window_minutes"]) * 60.0
 
         self.dropped_frames = 0
@@ -1014,14 +1019,14 @@ class MonitoringPipeline:
         return OverallStatus.COMPLIANT
 
     def _encode_frame(self, frame: np.ndarray) -> bytes:
-        ok, encoded = cv2.imencode(
-            ".jpg",
+        encoded = encode_jpeg_bytes(
             frame,
-            [int(cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+            quality=self.jpeg_quality,
+            backend=self.frame_jpeg_backend,
         )
-        if not ok:
+        if encoded is None:
             return b""
-        return bytes(encoded)
+        return encoded
 
     def _crop_to_bbox(self, frame: np.ndarray, bbox: tuple[float, float, float, float]) -> np.ndarray:
         h, w = frame.shape[:2]
@@ -1170,7 +1175,12 @@ class MonitoringPipeline:
         if not points:
             return False
 
-        min_dist = min(point_distance(center, p) for p in points)
+        pts = np.asarray(points, dtype=np.float32)
+        if pts.size == 0:
+            return False
+        dx = pts[:, 0] - float(center[0])
+        dy = pts[:, 1] - float(center[1])
+        min_dist = float(np.min(np.hypot(dx, dy)))
         limit = max(24.0, float(rule.distance_threshold_px) * 1.35)
         return min_dist <= limit
 
@@ -1257,20 +1267,83 @@ class MonitoringPipeline:
         return out
 
     def _nms_merge_detections(self, detections: List[PPEDetection], iou_threshold: float) -> List[PPEDetection]:
-        """Simple class-aware NMS merge across detector sources."""
+        """Class-aware NMS merge using torchvision when available."""
         by_label: Dict[str, List[PPEDetection]] = {}
         for det in detections:
             by_label.setdefault(det.label, []).append(det)
 
         kept: List[PPEDetection] = []
         for label, group in by_label.items():
-            group_sorted = sorted(group, key=lambda d: d.conf, reverse=True)
-            while group_sorted:
-                best = group_sorted.pop(0)
-                kept.append(best)
-                remain: List[PPEDetection] = []
-                for det in group_sorted:
-                    if box_iou(best.bbox, det.bbox) < iou_threshold:
-                        remain.append(det)
-                group_sorted = remain
+            if len(group) <= 1:
+                kept.extend(group)
+                continue
+
+            boxes = np.asarray([det.bbox for det in group], dtype=np.float32)
+            scores = np.asarray([float(det.conf) for det in group], dtype=np.float32)
+            keep_idx = self._nms_keep_indices(
+                boxes=boxes,
+                scores=scores,
+                iou_threshold=float(iou_threshold),
+            )
+            for idx in keep_idx:
+                kept.append(group[int(idx)])
         return kept
+
+    def _nms_keep_indices(
+        self,
+        *,
+        boxes: np.ndarray,
+        scores: np.ndarray,
+        iou_threshold: float,
+    ) -> np.ndarray:
+        if boxes.size == 0:
+            return np.empty((0,), dtype=np.int64)
+        if self._torchvision_nms_ready:
+            try:
+                import torch
+                from torchvision.ops import nms as tv_nms
+
+                keep = tv_nms(
+                    torch.as_tensor(boxes, dtype=torch.float32),
+                    torch.as_tensor(scores, dtype=torch.float32),
+                    float(iou_threshold),
+                )
+                return keep.cpu().numpy().astype(np.int64, copy=False)
+            except Exception:
+                if self.ensemble_nms_backend == "torchvision":
+                    return np.empty((0,), dtype=np.int64)
+        return _nms_numpy_indices(boxes=boxes, scores=scores, iou_threshold=float(iou_threshold))
+
+
+def _nms_numpy_indices(*, boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np.ndarray:
+    """Vectorized NMS index selection on CPU (fallback path)."""
+    if boxes.size == 0:
+        return np.empty((0,), dtype=np.int64)
+
+    x1 = boxes[:, 0]
+    y1 = boxes[:, 1]
+    x2 = boxes[:, 2]
+    y2 = boxes[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    order = scores.argsort()[::-1]
+    keep: List[int] = []
+
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
+        inter_w = np.maximum(0.0, xx2 - xx1)
+        inter_h = np.maximum(0.0, yy2 - yy1)
+        inter = inter_w * inter_h
+        denom = areas[i] + areas[rest] - inter
+        iou = np.divide(inter, denom, out=np.zeros_like(inter), where=denom > 0.0)
+        order = rest[iou < iou_threshold]
+
+    return np.asarray(keep, dtype=np.int64)

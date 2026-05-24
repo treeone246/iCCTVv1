@@ -83,6 +83,7 @@ Primary users are operations/safety teams who need live compliance visibility, a
 
 - Backend entrypoint: [`app/main.py`](app/main.py).
 - WebSocket stream: `/ws/stream`.
+- Optional websocket query override: `/ws/stream?jpeg=0` for JSON-only stream (no frame JPEG bytes).
 - Dashboard static UI: [`static/index.html`](static/index.html), [`static/dashboard.js`](static/dashboard.js), [`static/styles.css`](static/styles.css).
 - Exposes runtime/behavior/jetson/prometheus APIs.
 
@@ -295,6 +296,7 @@ Defaults include aliases for:
 |---|---|---|
 | `detector_ensemble.enabled` | `true` | Enable auxiliary full-frame YOLOE detections. |
 | `detector_ensemble.fusion_mode` | `parallel` | Merge strategy (`parallel` or NMS merge). |
+| `detector_ensemble.nms_backend` | `auto` | NMS backend for merge mode (`auto`, `torchvision`, `cpu`). |
 | `detector_ensemble.yoloe_conf_threshold` | `0.20` | Confidence for auxiliary YOLOE detector path. |
 | `detector_ensemble.iou_nms_threshold` | `0.50` | NMS IoU for merge mode. |
 | `detector_ensemble.allowed_items` | `[helmet, goggles, gloves, boots, coverall, no_gloves, no_boots, harness]` | Labels accepted from aux detector. |
@@ -304,6 +306,8 @@ Defaults include aliases for:
 | `verifier.ollama.model` | `qwen2.5vl:3b` | VLM model for conflict resolution. |
 | `verifier.ollama.timeout_seconds` | `8.0` | Ollama request timeout. |
 | `verifier.ollama.temperature` | `0.0` | Ollama temperature. |
+| `verifier.ollama.jpeg_backend` | `auto` | JPEG backend for VLM payloads (`auto`, `nvjpeg`, `cpu`). |
+| `verifier.ollama.jpeg_quality` | `85` | JPEG quality for VLM payload crops. |
 | `verifier.conflict_resolver.min_iou` | `0.05` | Minimum overlap for conflict analysis. |
 | `verifier.conflict_resolver.ambiguity_margin` | `0.12` | Positive/negative score margin for ambiguity. |
 | `verifier.conflict_resolver.low_conf_threshold` | `0.40` | Low confidence threshold in conflict logic. |
@@ -383,7 +387,10 @@ Defaults include aliases for:
 |---|---|
 | `required_ppe` | `[helmet, goggles, gloves, boots, coverall]` |
 | `dashboard.jpeg_quality` | `75` |
+| `dashboard.jpeg_backend` | `auto` |
+| `dashboard.stream_jpeg_enabled` | `true` |
 | `dashboard.jpeg_interval_frames` | `1` |
+| `dashboard.max_stream_clients` | `1` |
 | `dashboard.metrics_window_minutes` | `60` |
 
 ### Compute, memory, and logging
@@ -435,6 +442,9 @@ Defaults include aliases for:
 | `face_gate.min_confidence` | `0.45` |
 | `face_gate.min_face_area_ratio` | `0.02` |
 | `face_gate.nms_iou_threshold` | `0.40` |
+| `face_gate.gpu_preprocess` | `true` |
+| `face_gate.decode_backend` | `auto` |
+| `face_gate.nms_backend` | `auto` |
 | `face_gate.cache_seconds` | `0.2` |
 | `event_stream.enabled` | `true` |
 | `event_stream.path` | `outputs/detection_events.jsonl` |
@@ -721,6 +731,7 @@ Additional behavior-agent files:
 - Repository status on Jetson Orin Nano Super benchmark:
   - Use [`docs/perf_baseline_python.md`](docs/perf_baseline_python.md) for the 3-test N=2 baseline workflow.
   - You can run the baseline workflow with `bash scripts/run_phase0_tests.sh`.
+  - For throughput-focused runs, add `--ws-no-jpeg` to remove websocket JPEG encode/transport overhead.
   - Artifacts are written under `outputs/phase0_<timestamp>/` (per-test uvicorn logs, tegrastats logs, py-spy SVG, websocket summaries).
 - Known bottlenecks from current implementation:
   - Python hot path still performs pose tracking and post-processing per frame.

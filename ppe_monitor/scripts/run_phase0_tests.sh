@@ -22,6 +22,7 @@ OUTPUT_DIR=""
 CONFIG_PATH="$ROOT_DIR/config.yaml"
 FORCE_IMGSZ_640="1"
 SKIP_PYSPY="0"
+WS_NO_JPEG="0"
 
 usage() {
   cat <<'EOF'
@@ -34,6 +35,7 @@ Options:
   --output-dir <path>       Output directory for artifacts
   --no-force-imgsz-640      Do not force inference.imgsz=640 during test runs
   --skip-pyspy              Do not run py-spy even if installed
+  --ws-no-jpeg              Request JSON-only websocket stream (no JPEG frames)
   -h, --help                Show this help
 EOF
 }
@@ -62,6 +64,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-pyspy)
       SKIP_PYSPY="1"
+      shift
+      ;;
+    --ws-no-jpeg)
+      WS_NO_JPEG="1"
       shift
       ;;
     -h|--help)
@@ -235,11 +241,17 @@ run_test() {
   start_tegrastats "$test_dir/tegrastats.log"
   start_pyspy "$UVICORN_PID" "$test_dir/profile.svg" "$test_dir/pyspy.log"
 
+  local ws_jpeg_args=()
+  if [[ "$WS_NO_JPEG" == "1" ]]; then
+    ws_jpeg_args+=(--no-jpeg)
+  fi
+
   python scripts/ws_phase0_client.py \
     --url "ws://${HOST}:${PORT}/ws/stream" \
     --duration "$DURATION" \
     --output "$test_dir/ws_summary.json" \
     --metrics-jsonl "$test_dir/ws_metrics.jsonl" \
+    "${ws_jpeg_args[@]}" \
     >"$test_dir/ws_client.log" 2>&1
 
   stop_processes
@@ -270,6 +282,7 @@ port=$PORT
 output_dir=$OUTPUT_DIR
 force_imgsz_640=$FORCE_IMGSZ_640
 skip_pyspy=$SKIP_PYSPY
+ws_no_jpeg=$WS_NO_JPEG
 EOF
 
 run_test "test1_cv_only" "false" "false"

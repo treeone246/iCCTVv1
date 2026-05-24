@@ -68,6 +68,7 @@ inference:
 detector_ensemble:
   enabled: true
   fusion_mode: parallel
+  nms_backend: auto
   yoloe_conf_threshold: 0.20
   iou_nms_threshold: 0.50
   allowed_items: [helmet, goggles, gloves, boots, coverall, no_gloves, no_boots, harness]
@@ -80,6 +81,8 @@ verifier:
     model: "qwen2.5vl:3b"
     timeout_seconds: 8.0
     temperature: 0.0
+    jpeg_backend: auto
+    jpeg_quality: 85
   conflict_resolver:
     min_iou: 0.05
     ambiguity_margin: 0.12
@@ -227,7 +230,10 @@ required_ppe:
 
 dashboard:
   jpeg_quality: 75
+  jpeg_backend: auto
+  stream_jpeg_enabled: true
   jpeg_interval_frames: 1
+  max_stream_clients: 1
   metrics_window_minutes: 60
 
 compute_monitor:
@@ -290,6 +296,9 @@ face_gate:
   min_confidence: 0.45
   min_face_area_ratio: 0.02
   nms_iou_threshold: 0.40
+  gpu_preprocess: true
+  decode_backend: auto
+  nms_backend: auto
   cache_seconds: 0.2
 
 event_stream:
@@ -303,7 +312,7 @@ event_stream:
   queue_max: 2000
 
 behavior_agent:
-  enabled: true
+  enabled: false
   interval_seconds: 10
   events_jsonl: "outputs/detection_events.jsonl"
   output_dir: "outputs/behavior_agent"
