@@ -57,13 +57,13 @@ ppe_label_aliases:
 
 inference:
   device: auto
-  conf_threshold_pose: 0.40
+  conf_threshold_pose: 0.25
   conf_threshold_ppe: 0.22
   conf_threshold_verifier: 0.45
   per_item_conf_thresholds:
     harness: 0.70
-  keypoint_conf_floor: 0.40
-  imgsz: 640
+  keypoint_conf_floor: 0.30
+  imgsz: 960
 
 detector_ensemble:
   enabled: true
@@ -143,7 +143,7 @@ async_verifier:
   drop_if_full: true
 
 association:
-  keypoint_conf_floor: 0.40
+  keypoint_conf_floor: 0.30
   held_distance_ratio: 1.2
   held_items: [helmet, goggles, gloves]
   goggles_face_gate_enabled: true
