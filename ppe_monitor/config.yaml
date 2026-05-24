@@ -63,7 +63,7 @@ inference:
   per_item_conf_thresholds:
     harness: 0.70
   keypoint_conf_floor: 0.30
-  imgsz: 960
+  imgsz: 640
 
 detector_ensemble:
   enabled: true
