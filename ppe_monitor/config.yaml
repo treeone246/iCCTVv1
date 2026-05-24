@@ -74,7 +74,7 @@ detector_ensemble:
 
 verifier:
   backend: ollama_hybrid
-  enable_vlm: true
+  enable_vlm: false
   ollama:
     host: "http://127.0.0.1:11434"
     model: "qwen2.5vl:3b"
