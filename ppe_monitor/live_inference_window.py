@@ -520,7 +520,7 @@ def run_image_mode(
         if frame is None:
             raise RuntimeError(f"Failed to read image: {image_path.as_posix()}")
 
-        payload, _ = pipeline.process_frame(frame, frame_id)
+        payload, _ = pipeline.process_frame(frame, frame_id, include_stream_jpeg=False)
         if performance_logger is not None:
             jetson_snapshot = jetson_bridge.read_snapshot() if jetson_bridge is not None else None
             performance_logger.emit(
@@ -672,7 +672,7 @@ def main() -> None:
                 if not ok:
                     break
 
-                payload, _ = pipeline.process_frame(frame, frame_id)
+                payload, _ = pipeline.process_frame(frame, frame_id, include_stream_jpeg=False)
                 jetson_snapshot = jetson_bridge.read_snapshot() if jetson_bridge is not None else None
                 performance_logger.emit(
                     frame_id=frame_id,

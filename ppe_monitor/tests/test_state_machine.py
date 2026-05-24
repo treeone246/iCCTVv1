@@ -113,3 +113,61 @@ def test_cooldown_blocks_repeat_alert_until_elapsed() -> None:
     )
     assert repeat is not None
     assert repeat.event_type == "ALERT_RAISED"
+
+
+def test_frame_jpeg_provider_is_lazy_and_cached_per_update() -> None:
+    sm = PersonComplianceState(
+        window_size=5,
+        violation_threshold=3,
+        clear_threshold=1,
+        confirm_seconds=0.0,
+        cooldown_seconds=60.0,
+    )
+    calls = {"count": 0}
+
+    def _provider() -> bytes:
+        calls["count"] += 1
+        return b"lazy-evidence"
+
+    # No violation path yet: provider should not be touched.
+    evt = sm.update(
+        person_id=9,
+        item="helmet",
+        classification=Classification.COMPLIANT,
+        frame_jpeg=None,
+        frame_jpeg_provider=_provider,
+        event_ts=0.0,
+    )
+    assert evt is None
+    assert calls["count"] == 0
+
+    # Build enough violation votes to trigger one raised alert.
+    sm.update(
+        person_id=9,
+        item="helmet",
+        classification=Classification.VIOLATION,
+        frame_jpeg=None,
+        frame_jpeg_provider=_provider,
+        event_ts=1.0,
+    )
+    sm.update(
+        person_id=9,
+        item="helmet",
+        classification=Classification.VIOLATION,
+        frame_jpeg=None,
+        frame_jpeg_provider=_provider,
+        event_ts=1.1,
+    )
+    raised = sm.update(
+        person_id=9,
+        item="helmet",
+        classification=Classification.VIOLATION,
+        frame_jpeg=None,
+        frame_jpeg_provider=_provider,
+        event_ts=1.2,
+    )
+
+    assert raised is not None
+    assert raised.event_type == "ALERT_RAISED"
+    # Provider should only be evaluated once in a single update path.
+    assert calls["count"] == 1

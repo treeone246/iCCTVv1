@@ -298,13 +298,21 @@ class MonitoringPipeline:
         tracked_people_override: List[TrackedPerson] | None = None,
         ppe_detections_override: List[PPEDetection] | None = None,
         backend: str = "python",
+        include_stream_jpeg: bool = True,
     ) -> tuple[FramePayload, bytes]:
         self._drain_async_verifier_results()
         self._frames_processed += 1
         if tracked_people_override is None:
             self._pose_infer_calls += 1
             self.pose_calls.append(time.time())
-        frame_jpeg = self._encode_frame(frame)
+        frame_jpeg_cache: bytes | None = None
+
+        def _get_frame_jpeg() -> bytes:
+            nonlocal frame_jpeg_cache
+            if frame_jpeg_cache is None:
+                frame_jpeg_cache = self._encode_frame(frame)
+            return frame_jpeg_cache
+
         tracked_people = tracked_people_override if tracked_people_override is not None else self.pose_tracker.track(frame)
         self._prune_stability_state(tracked_people)
         if ppe_detections_override is not None:
@@ -367,7 +375,8 @@ class MonitoringPipeline:
                     person_id=person.person_id,
                     item=item,
                     classification=item_state_raw,
-                    frame_jpeg=frame_jpeg,
+                    frame_jpeg=None,
+                    frame_jpeg_provider=_get_frame_jpeg,
                 )
                 if change is not None:
                     log_event(
@@ -440,7 +449,8 @@ class MonitoringPipeline:
             active_alerts=active_alerts,
             metrics=metrics,
         )
-        return payload, frame_jpeg
+        stream_jpeg = _get_frame_jpeg() if include_stream_jpeg else b""
+        return payload, stream_jpeg
 
     def _stabilize_display_state(
         self,

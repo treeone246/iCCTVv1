@@ -162,6 +162,7 @@ async def ws_stream(websocket: WebSocket) -> None:
     frame_id = 0
     backend = str(getattr(app.state, "runtime_backend", "python"))
     target_fps = float(app.state.config.get("video", {}).get("target_fps", 20))
+    jpeg_interval_frames = max(1, int(app.state.config.get("dashboard", {}).get("jpeg_interval_frames", 1)))
     if backend == "deepstream":
         target_fps = float(app.state.config.get("deepstream", {}).get("target_fps", target_fps))
     frame_interval = 1.0 / max(1.0, target_fps)
@@ -170,6 +171,11 @@ async def ws_stream(websocket: WebSocket) -> None:
     try:
         while True:
             now = time.perf_counter()
+            send_jpeg_for_frame = (frame_id % jpeg_interval_frames) == 0
+            deepstream_emit_jpeg = bool(getattr(app.state, "deepstream_emit_jpeg", True))
+            include_stream_jpeg = send_jpeg_for_frame and (
+                backend != "deepstream" or deepstream_emit_jpeg
+            )
             if backend == "deepstream":
                 bundle = await asyncio.to_thread(
                     app.state.deepstream_runner.read_bundle,
@@ -191,6 +197,7 @@ async def ws_stream(websocket: WebSocket) -> None:
                     frame_id,
                     ppe_detections_override=bundle.adapted.ppe_detections,
                     backend="deepstream",
+                    include_stream_jpeg=include_stream_jpeg,
                 )
                 input_fps = float(bundle.input_fps)
                 primary_latency_ms = float(bundle.primary_infer_latency_ms)
@@ -214,6 +221,7 @@ async def ws_stream(websocket: WebSocket) -> None:
                     app.state.pipeline.process_frame,
                     frame,
                     frame_id,
+                    include_stream_jpeg=include_stream_jpeg,
                 )
                 input_fps = float(payload.metrics.fps)
                 primary_latency_ms = 0.0
@@ -246,7 +254,7 @@ async def ws_stream(websocket: WebSocket) -> None:
                 per_camera_fps=per_camera_fps,
                 timestamp=payload.timestamp,
             )
-            if backend != "deepstream" or bool(getattr(app.state, "deepstream_emit_jpeg", True)):
+            if include_stream_jpeg:
                 await websocket.send_bytes(jpeg)
             await websocket.send_json(payload.model_dump())
             frame_id += 1

@@ -383,6 +383,7 @@ Defaults include aliases for:
 |---|---|
 | `required_ppe` | `[helmet, goggles, gloves, boots, coverall]` |
 | `dashboard.jpeg_quality` | `75` |
+| `dashboard.jpeg_interval_frames` | `1` |
 | `dashboard.metrics_window_minutes` | `60` |
 
 ### Compute, memory, and logging
@@ -718,8 +719,9 @@ Additional behavior-agent files:
 ## 10. Performance notes
 
 - Repository status on Jetson Orin Nano Super benchmark:
-  - A formal committed baseline number is not present yet.
-  - [`docs/perf_baseline_python.md`](docs/perf_baseline_python.md) exists as a template and is currently unfilled.
+  - Use [`docs/perf_baseline_python.md`](docs/perf_baseline_python.md) for the 3-test N=2 baseline workflow.
+  - You can run the baseline workflow with `bash scripts/run_phase0_tests.sh`.
+  - Artifacts are written under `outputs/phase0_<timestamp>/` (per-test uvicorn logs, tegrastats logs, py-spy SVG, websocket summaries).
 - Known bottlenecks from current implementation:
   - Python hot path still performs pose tracking and post-processing per frame.
   - Optional detector ensemble adds extra full-frame YOLOE inference.

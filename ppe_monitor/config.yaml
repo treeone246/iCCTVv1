@@ -227,6 +227,7 @@ required_ppe:
 
 dashboard:
   jpeg_quality: 75
+  jpeg_interval_frames: 1
   metrics_window_minutes: 60
 
 compute_monitor:

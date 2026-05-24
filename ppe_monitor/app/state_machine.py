@@ -3,7 +3,7 @@
 from collections import deque
 from dataclasses import dataclass, field
 from time import time
-from typing import Deque, Dict, Optional
+from typing import Callable, Deque, Dict, Optional
 
 from .schemas import AlertStatus, Classification
 
@@ -87,11 +87,29 @@ class PersonComplianceState:
         item: str,
         classification: Classification,
         frame_jpeg: Optional[bytes],
+        frame_jpeg_provider: Optional[Callable[[], Optional[bytes]]] = None,
         event_ts: Optional[float] = None,
     ) -> Optional[StateChange]:
         state = self._ensure_item_state(person_id, item)
         ts = event_ts if event_ts is not None else time()
         violation_like = {Classification.VIOLATION, Classification.VIOLATION_TENTATIVE}
+        resolved_frame_jpeg = False
+        cached_frame_jpeg: Optional[bytes] = None
+
+        def _resolve_frame_jpeg() -> Optional[bytes]:
+            nonlocal resolved_frame_jpeg, cached_frame_jpeg
+            if resolved_frame_jpeg:
+                return cached_frame_jpeg
+            if frame_jpeg is not None:
+                cached_frame_jpeg = frame_jpeg
+                resolved_frame_jpeg = True
+                return cached_frame_jpeg
+            if frame_jpeg_provider is None:
+                resolved_frame_jpeg = True
+                return None
+            cached_frame_jpeg = frame_jpeg_provider()
+            resolved_frame_jpeg = True
+            return cached_frame_jpeg
 
         state.recent.append(classification)
 
@@ -132,23 +150,24 @@ class PersonComplianceState:
                 if state.alert_status != AlertStatus.ACTIVE:
                     state.alert_status = AlertStatus.ACTIVE
                     state.last_transition_ts = ts
-                    state.evidence_jpeg = frame_jpeg
+                    state.evidence_jpeg = _resolve_frame_jpeg()
 
                 can_send = (
                     state.last_alert_sent_ts is None
                     or (ts - state.last_alert_sent_ts) >= self.cooldown_seconds
                 )
                 if can_send:
+                    evidence = _resolve_frame_jpeg()
                     state.last_alert_sent_ts = ts
                     state.last_transition_ts = ts
-                    state.evidence_jpeg = frame_jpeg
+                    state.evidence_jpeg = evidence
                     return StateChange(
                         event_type="ALERT_RAISED",
                         person_id=person_id,
                         item=item,
                         alert_status=state.alert_status,
                         timestamp=ts,
-                        evidence_jpeg=frame_jpeg,
+                        evidence_jpeg=evidence,
                     )
         else:
             # Not enough recent violation votes: keep clear unless still confirmed.
