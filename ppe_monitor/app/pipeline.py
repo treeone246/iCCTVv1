@@ -7,9 +7,13 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Deque, Dict, List, Optional, Set, Tuple
+from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 import numpy as np
+try:
+    import cv2
+except Exception:  # pragma: no cover - runtime fallback when OpenCV is unavailable
+    cv2 = None
 
 from .association import (
     AssociationEngine,
@@ -87,6 +91,15 @@ class VerifierOutcome:
 def log_event(event_type: str, frame_id: int, person_id: int, **fields: object) -> None:
     payload = {"event_type": event_type, "frame_id": frame_id, "person_id": person_id, **fields}
     print(json.dumps(payload, default=str))
+
+
+HELMET_COLOR_TO_STATUS: Dict[str, str] = {
+    "white": "Manager/Supervisor/Engineer",
+    "yellow": "Laborer/Operator/Floorhand",
+    "blue": "Technician/Electrician/Mechanical Supervisor",
+    "red": "Safety Officer/Firefighter",
+    "green": "Medical/Paramedic/Environmental Supervisor",
+}
 
 
 class MonitoringPipeline:
@@ -276,6 +289,12 @@ class MonitoringPipeline:
         self.sticky_negative_conf_max = float(mem_cfg.get("sticky_negative_conf_max", 0.45))
         self.event_writer = EventStreamWriter(config)
         self.face_gate = SCRFDFaceGate(config)
+        helmet_color_cfg = config.get("helmet_color", {}) or {}
+        self.helmet_color_enabled = bool(helmet_color_cfg.get("enabled", True))
+        self.helmet_color_min_ratio = float(helmet_color_cfg.get("min_ratio", 0.08))
+        self.helmet_color_min_valid_pixels = int(helmet_color_cfg.get("min_valid_pixels", 120))
+        self.helmet_color_min_value = int(helmet_color_cfg.get("min_value", 40))
+        self.helmet_color_min_saturation = int(helmet_color_cfg.get("min_saturation", 60))
 
         async_cfg = config.get("async_verifier", {}) or {}
         self.async_verifier_enabled = bool(async_cfg.get("enabled", False))
@@ -359,7 +378,18 @@ class MonitoringPipeline:
         self._last_backend = str(backend or "python")
 
         person_payloads: List[PersonPayload] = []
+        person_profile_map: Dict[int, Dict[str, Any]] = {}
         for person in tracked_people:
+            helmet_color, person_status, helmet_color_conf = self._infer_person_helmet_profile(
+                person=person,
+                ppe_detections=ppe_detections,
+                frame=frame,
+            )
+            person_profile_map[int(person.person_id)] = {
+                "helmet_color": helmet_color,
+                "person_status": person_status,
+                "helmet_color_confidence": helmet_color_conf,
+            }
             per_item_state: Dict[str, Classification] = {}
             per_item_state_raw: Dict[str, Classification] = {}
             per_item_reason: Dict[str, str] = {}
@@ -438,11 +468,19 @@ class MonitoringPipeline:
                     per_item_state=per_item_state,
                     per_item_reason=per_item_reason,
                     overall_status=overall,
+                    helmet_color=helmet_color,
+                    helmet_color_confidence=helmet_color_conf,
+                    person_status=person_status,
                 )
             )
         self.event_writer.prune(p.person_id for p in tracked_people)
 
-        active_alerts = self._build_active_alerts()
+        active_alerts = self._build_active_alerts(
+            frame=frame,
+            tracked_people=tracked_people,
+            ppe_detections=ppe_detections,
+            person_profile_map=person_profile_map,
+        )
         metrics = self._build_metrics(len(tracked_people))
 
         detections_payload = [
@@ -996,14 +1034,41 @@ class MonitoringPipeline:
         if self._async_thread is not None:
             self._async_thread.join(timeout=1.5)
 
-    def _build_active_alerts(self) -> List[AlertPayload]:
+    def _build_active_alerts(
+        self,
+        *,
+        frame: np.ndarray,
+        tracked_people: List[TrackedPerson],
+        ppe_detections: List[PPEDetection],
+        person_profile_map: Dict[int, Dict[str, Any]],
+    ) -> List[AlertPayload]:
         alerts: List[AlertPayload] = []
+        person_by_id = {int(person.person_id): person for person in tracked_people}
         for person_id, item, item_state in self.state_machine.iter_active_alerts():
             encoded_evidence = (
                 base64.b64encode(item_state.evidence_jpeg).decode("ascii")
                 if item_state.evidence_jpeg is not None
                 else None
             )
+            person = person_by_id.get(int(person_id))
+            profile = person_profile_map.get(int(person_id), {})
+            helmet_color = str(profile.get("helmet_color", "unknown"))
+            helmet_color_confidence = float(profile.get("helmet_color_confidence", 0.0))
+            person_status = str(profile.get("person_status", self._status_for_helmet_color(helmet_color)))
+            person_crop_b64: Optional[str] = None
+            item_crop_b64: Optional[str] = None
+            if person is not None:
+                person_crop_b64 = self._encode_crop_base64(self._crop_to_bbox(frame, person.bbox))
+                item_crop_b64 = self._encode_crop_base64(self._crop_for_item(frame, person, item))
+                if item == "helmet" and helmet_color == "unknown":
+                    det_color, det_status, det_conf = self._infer_person_helmet_profile(
+                        person=person,
+                        ppe_detections=ppe_detections,
+                        frame=frame,
+                    )
+                    helmet_color = det_color
+                    helmet_color_confidence = det_conf
+                    person_status = det_status
             alert_id = f"{person_id}:{item}:{int(item_state.last_transition_ts * 1000)}"
             reason = self.last_item_reason.get((person_id, item), f"missing_or_incorrect_{item}")
             alerts.append(
@@ -1014,8 +1079,17 @@ class MonitoringPipeline:
                     status=item_state.alert_status,
                     reason=reason,
                     timestamp=item_state.last_transition_ts,
-                    evidence_available=item_state.evidence_jpeg is not None,
-                    evidence_jpeg_base64=encoded_evidence,
+                    evidence_available=(
+                        item_state.evidence_jpeg is not None
+                        or person_crop_b64 is not None
+                        or item_crop_b64 is not None
+                    ),
+                    evidence_jpeg_base64=encoded_evidence or item_crop_b64,
+                    person_status=person_status,
+                    helmet_color=helmet_color,
+                    helmet_color_confidence=helmet_color_confidence,
+                    person_crop_jpeg_base64=person_crop_b64,
+                    item_crop_jpeg_base64=item_crop_b64,
                 )
             )
         return alerts
@@ -1122,6 +1196,139 @@ class MonitoringPipeline:
         if any(v == Classification.INDETERMINATE for v in per_item_state.values()):
             return OverallStatus.INDETERMINATE
         return OverallStatus.COMPLIANT
+
+    def _status_for_helmet_color(self, helmet_color: str) -> str:
+        return HELMET_COLOR_TO_STATUS.get(str(helmet_color).lower(), "Unknown role")
+
+    def _infer_person_helmet_profile(
+        self,
+        *,
+        person: TrackedPerson,
+        ppe_detections: List[PPEDetection],
+        frame: np.ndarray,
+    ) -> tuple[str, str, float]:
+        if not self.helmet_color_enabled or cv2 is None:
+            return "unknown", "Unknown role", 0.0
+
+        helmet_roi = self._extract_helmet_roi(
+            person=person,
+            ppe_detections=ppe_detections,
+            frame=frame,
+        )
+        if helmet_roi is None or helmet_roi.size == 0:
+            return "unknown", "Unknown role", 0.0
+
+        color, confidence = self._detect_helmet_color_from_roi(helmet_roi)
+        return color, self._status_for_helmet_color(color), confidence
+
+    def _extract_helmet_roi(
+        self,
+        *,
+        person: TrackedPerson,
+        ppe_detections: List[PPEDetection],
+        frame: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        best_bbox: Optional[tuple[float, float, float, float]] = None
+        best_conf = -1.0
+        for det in ppe_detections:
+            if det.label != "helmet":
+                continue
+            if not self._detection_matches_item_region(person, "helmet", det.bbox):
+                continue
+            if float(det.conf) > best_conf:
+                best_conf = float(det.conf)
+                best_bbox = det.bbox
+
+        if best_bbox is not None:
+            crop = self._crop_to_bbox(frame, best_bbox)
+            if crop is not None and crop.size > 0:
+                return crop
+
+        point_names = self.item_keypoints.get("helmet", ["nose", "left_eye", "right_eye"])
+        points: List[tuple[float, float]] = []
+        for name in point_names:
+            conf = float(person.keypoint_confidences.get(name, 0.0))
+            pt = person.keypoints.get(name)
+            if pt is None or conf < self.verifier_roi_conf_floor:
+                continue
+            points.append((float(pt[0]), float(pt[1])))
+        if not points:
+            return None
+
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        min_x = min(xs)
+        max_x = max(xs)
+        min_y = min(ys)
+        max_y = max(ys)
+
+        roi_w = max(1.0, max_x - min_x)
+        roi_h = max(1.0, max_y - min_y)
+        cx = (min_x + max_x) * 0.5
+        cy = (min_y + max_y) * 0.5
+        pad_scale = float(self.verifier_roi_padding.get("helmet", 2.0))
+        target_w = max(float(self.verifier_roi_min_side), roi_w * pad_scale)
+        target_h = max(float(self.verifier_roi_min_side), roi_h * pad_scale)
+
+        candidate = (
+            cx - target_w * 0.5,
+            cy - target_h * 0.6,
+            cx + target_w * 0.5,
+            cy + target_h * 0.4,
+        )
+        crop = self._crop_to_bbox(frame, candidate)
+        if crop is None or crop.size == 0:
+            return None
+        return crop
+
+    def _detect_helmet_color_from_roi(self, helmet_roi: np.ndarray) -> tuple[str, float]:
+        if cv2 is None or helmet_roi is None or helmet_roi.size == 0:
+            return "unknown", 0.0
+        if helmet_roi.ndim != 3 or helmet_roi.shape[2] < 3:
+            return "unknown", 0.0
+
+        hsv = cv2.cvtColor(helmet_roi, cv2.COLOR_BGR2HSV)
+        h = hsv[:, :, 0]
+        s = hsv[:, :, 1]
+        v = hsv[:, :, 2]
+
+        valid = v >= self.helmet_color_min_value
+        valid_count = int(np.count_nonzero(valid))
+        if valid_count < self.helmet_color_min_valid_pixels:
+            return "unknown", 0.0
+
+        min_sat = max(0, int(self.helmet_color_min_saturation))
+        color_masks: Dict[str, np.ndarray] = {
+            "white": (s <= 38) & (v >= 135),
+            "yellow": (h >= 18) & (h <= 38) & (s >= min_sat) & (v >= 65),
+            "blue": (h >= 90) & (h <= 130) & (s >= min_sat) & (v >= 55),
+            "green": (h >= 40) & (h <= 90) & (s >= min_sat) & (v >= 55),
+            "red": (((h <= 10) | (h >= 170)) & (s >= min_sat) & (v >= 65)),
+        }
+
+        best_color = "unknown"
+        best_ratio = 0.0
+        for color, mask in color_masks.items():
+            ratio = float(np.count_nonzero(mask & valid)) / float(valid_count)
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_color = color
+
+        if best_ratio < self.helmet_color_min_ratio:
+            return "unknown", best_ratio
+        return best_color, best_ratio
+
+    def _encode_crop_base64(self, crop: Optional[np.ndarray]) -> Optional[str]:
+        if crop is None or crop.size == 0:
+            return None
+        encoded = encode_jpeg_bytes(
+            crop,
+            quality=self.jpeg_quality,
+            backend=self.frame_jpeg_backend,
+        )
+        if encoded is None:
+            return None
+        return base64.b64encode(encoded).decode("ascii")
 
     def _encode_frame(self, frame: np.ndarray) -> bytes:
         encoded = encode_jpeg_bytes(

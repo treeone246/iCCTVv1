@@ -3,6 +3,7 @@ const ctx = canvas.getContext("2d");
 const personsPanel = document.getElementById("personsPanel");
 const alertsPanel = document.getElementById("alertsPanel");
 const ppeStatusPanel = document.getElementById("ppeStatusPanel");
+const violationCardsPanel = document.getElementById("violationCardsPanel");
 
 const metricTracked = document.getElementById("metricTracked");
 const metricViolations = document.getElementById("metricViolations");
@@ -103,7 +104,11 @@ function drawPeople(persons) {
 
     ctx.fillStyle = color;
     ctx.font = "12px Segoe UI";
-    ctx.fillText(`ID ${person.person_id}`, x1, Math.max(12, y1 - 4));
+    const helmetTag =
+      person.helmet_color && person.helmet_color !== "unknown"
+        ? ` [${String(person.helmet_color).toUpperCase()}]`
+        : "";
+    ctx.fillText(`ID ${person.person_id}${helmetTag}`, x1, Math.max(12, y1 - 4));
 
     drawSkeleton(person.keypoints, color);
   }
@@ -399,6 +404,81 @@ function drawTrendChart(canvas, seriesList, colors, labels) {
   }
 }
 
+function renderViolationCards(alerts) {
+  if (!violationCardsPanel) {
+    return;
+  }
+  violationCardsPanel.innerHTML = "";
+  const sorted = [...(alerts || [])].sort(
+    (a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0),
+  );
+  if (sorted.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "violation-empty";
+    empty.textContent = "No active violations.";
+    violationCardsPanel.appendChild(empty);
+    return;
+  }
+
+  for (const alert of sorted) {
+    const card = document.createElement("article");
+    card.className = "violation-card";
+
+    const header = document.createElement("div");
+    header.className = "violation-header";
+    header.textContent = `Person ${alert.person_id} - ${String(alert.item || "").toUpperCase()} VIOLATION`;
+    card.appendChild(header);
+
+    const meta = document.createElement("div");
+    meta.className = "violation-meta";
+    const ts = new Date((alert.timestamp || 0) * 1000).toLocaleString();
+    const helmetColor = String(alert.helmet_color || "unknown").toUpperCase();
+    meta.textContent = `${ts} | ${alert.person_status || "Unknown role"} | Helmet color: ${helmetColor}`;
+    card.appendChild(meta);
+
+    const reason = document.createElement("div");
+    reason.className = "violation-reason";
+    reason.textContent = alert.reason || "No reason provided.";
+    card.appendChild(reason);
+
+    const media = document.createElement("div");
+    media.className = "violation-media";
+
+    const addThumb = (title, b64) => {
+      if (!b64) {
+        return;
+      }
+      const wrap = document.createElement("div");
+      wrap.className = "violation-thumb-wrap";
+
+      const label = document.createElement("div");
+      label.className = "violation-thumb-label";
+      label.textContent = title;
+      wrap.appendChild(label);
+
+      const img = document.createElement("img");
+      img.className = "violation-thumb";
+      img.alt = `${title} for person ${alert.person_id}`;
+      img.src = `data:image/jpeg;base64,${b64}`;
+      wrap.appendChild(img);
+      media.appendChild(wrap);
+    };
+
+    addThumb("Person ROI", alert.person_crop_jpeg_base64);
+    addThumb("PPE Item ROI", alert.item_crop_jpeg_base64 || alert.evidence_jpeg_base64);
+
+    if (!media.hasChildNodes()) {
+      const missing = document.createElement("div");
+      missing.className = "violation-empty";
+      missing.textContent = "No ROI image available.";
+      media.appendChild(missing);
+    }
+
+    card.appendChild(media);
+    violationCardsPanel.appendChild(card);
+  }
+}
+
 function updatePanels(payload) {
   const metrics = payload.metrics || {};
   metricTracked.textContent = String(metrics.tracked_count ?? 0);
@@ -409,12 +489,18 @@ function updatePanels(payload) {
   const persons = payload.persons || [];
   renderPPEStatusDashboard(persons, metrics);
   renderComputePanel(metrics);
+  renderViolationCards(payload.active_alerts || []);
 
   personsPanel.innerHTML = "";
   for (const person of persons) {
     const card = document.createElement("div");
     card.className = "person-card";
-    card.innerHTML = `<div><strong>Person ${person.person_id}</strong> - ${person.overall_status}</div>`;
+    const helmetColor = person.helmet_color && person.helmet_color !== "unknown"
+      ? String(person.helmet_color).toUpperCase()
+      : "UNKNOWN";
+    card.innerHTML =
+      `<div><strong>Person ${person.person_id}</strong> - ${person.overall_status}</div>` +
+      `<div class="person-meta">${person.person_status || "Unknown role"} | Helmet: ${helmetColor}</div>`;
 
     const chipList = document.createElement("div");
     chipList.className = "chip-list";
@@ -446,8 +532,10 @@ function updatePanels(payload) {
     const card = document.createElement("div");
     card.className = "alert-card";
     const ts = new Date((alert.timestamp || 0) * 1000).toLocaleTimeString();
+    const helmetColor = String(alert.helmet_color || "unknown").toUpperCase();
     card.innerHTML = `
       <div><strong>${alert.item}</strong> - Person ${alert.person_id}</div>
+      <div>${alert.person_status || "Unknown role"} | Helmet: ${helmetColor}</div>
       <div>${alert.reason}</div>
       <div>${ts}</div>
     `;

@@ -151,6 +151,12 @@ body {
   background: #fff;
 }
 
+.person-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .alert-evidence {
   display: block;
   width: 100%;
@@ -158,6 +164,71 @@ body {
   object-fit: contain;
   margin: 8px 0;
   border: 0.5px solid var(--line);
+}
+
+.violation-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 10px;
+  max-height: 420px;
+}
+
+.violation-card {
+  border: 0.5px solid var(--line);
+  border-left: 3px solid var(--bad);
+  background: #fff;
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.violation-header {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.violation-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.violation-reason {
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.violation-media {
+  margin-top: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.violation-thumb-wrap {
+  border: 0.5px solid var(--line);
+  border-radius: 4px;
+  padding: 6px;
+  background: #fafbfd;
+}
+
+.violation-thumb-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.violation-thumb {
+  display: block;
+  width: 100%;
+  height: 130px;
+  object-fit: contain;
+  border: 0.5px solid var(--line);
+  background: #fff;
+}
+
+.violation-empty {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .chip-list {
@@ -405,5 +476,13 @@ fieldset {
 
   .compute-card-wide {
     grid-column: span 1;
+  }
+
+  .violation-cards-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .violation-media {
+    grid-template-columns: 1fr;
   }
 }

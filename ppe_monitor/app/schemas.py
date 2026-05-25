@@ -77,6 +77,9 @@ class PersonPayload(BaseModel):
     per_item_state: Dict[str, Classification]
     per_item_reason: Dict[str, str] = {}
     overall_status: OverallStatus
+    helmet_color: str = "unknown"
+    helmet_color_confidence: float = 0.0
+    person_status: str = "Unknown role"
 
 
 class AlertPayload(BaseModel):
@@ -90,6 +93,11 @@ class AlertPayload(BaseModel):
     timestamp: float
     evidence_available: bool
     evidence_jpeg_base64: Optional[str] = None
+    person_status: str = "Unknown role"
+    helmet_color: str = "unknown"
+    helmet_color_confidence: float = 0.0
+    person_crop_jpeg_base64: Optional[str] = None
+    item_crop_jpeg_base64: Optional[str] = None
 
 
 class MetricsPayload(BaseModel):
