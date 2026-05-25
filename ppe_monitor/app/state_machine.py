@@ -46,8 +46,10 @@ class PersonComplianceState:
         confirm_seconds: float = 2.0,
         cooldown_seconds: float = 60.0,
     ) -> None:
-        self.window_size = window_size
-        self.violation_threshold = violation_threshold
+        self.window_size = max(1, int(window_size))
+        # Guard against invalid configs (for example threshold > window)
+        # that would otherwise prevent alerts from ever activating.
+        self.violation_threshold = max(1, min(int(violation_threshold), self.window_size))
         self.clear_threshold = clear_threshold
         self.confirm_seconds = confirm_seconds
         self.cooldown_seconds = cooldown_seconds

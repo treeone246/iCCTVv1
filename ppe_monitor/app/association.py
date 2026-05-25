@@ -54,7 +54,8 @@ class PPERule:
         expected_np = np.asarray(expected_points, dtype=np.float32)
         dx = expected_np[:, 0] - float(center[0])
         dy = expected_np[:, 1] - float(center[1])
-        min_expected_distance = float(np.min(np.hypot(dx, dy)))
+        distances = np.hypot(dx, dy)
+        min_expected_distance = float(np.min(distances))
 
         bound = False
         confidence = 0.0
@@ -69,6 +70,19 @@ class PPERule:
             bound = min_expected_distance <= self.distance_threshold_px
             if self.distance_threshold_px > 0:
                 confidence = max(0.0, 1.0 - (min_expected_distance / self.distance_threshold_px))
+            if bound and self.item in {"gloves", "boots"}:
+                nearest_idx = int(np.argmin(distances))
+                nearest_point = expected_points[nearest_idx]
+                x1, y1, x2, y2 = ppe_bbox
+                side = max(1.0, min(float(x2 - x1), float(y2 - y1)))
+                pad = max(6.0, side * 0.18)
+                if not point_in_or_near_bbox(nearest_point, ppe_bbox, pad):
+                    return BindResult(
+                        bound=False,
+                        held=False,
+                        confidence=0.0,
+                        reason="nearest_limb_keypoint_outside_bbox",
+                    )
 
         held = False
         if self.item in self.held_items:
@@ -98,6 +112,11 @@ class AssociationEngine:
         self.goggles_face_gate = bool(assoc_cfg.get("goggles_face_gate_enabled", True))
         self.goggles_face_min_points = int(assoc_cfg.get("goggles_face_min_points", 2))
         self.goggles_face_points = ("nose", "left_eye", "right_eye")
+        self.bilateral_items = set(
+            str(item) for item in assoc_cfg.get("bilateral_items", ["gloves", "boots"])
+        )
+        self.bilateral_bbox_pad_px = float(assoc_cfg.get("bilateral_bbox_pad_px", 12.0))
+        self.bilateral_distance_ratio = float(assoc_cfg.get("bilateral_distance_ratio", 1.15))
 
         self.rules: Dict[str, PPERule] = {
             "helmet": PPERule(
@@ -153,22 +172,65 @@ class AssociationEngine:
         rule = self.rules[item]
         if not self._required_points_observable(rule, keypoints, keypoint_confidences, frame_shape):
             return Classification.INDETERMINATE, None
+        visible_points = self._visible_points_for_rule(
+            rule,
+            keypoints,
+            keypoint_confidences,
+            frame_shape,
+        )
+        if not visible_points:
+            return Classification.INDETERMINATE, None
 
         item_detections = [det for det in ppe_detections if det.get("label") == item]
         if not item_detections:
             return Classification.VIOLATION_TENTATIVE, None
 
         best_result: Optional[BindResult] = None
+        covered_points: set[str] = set()
         for det in item_detections:
             result = rule.bind(det["bbox"], keypoints, keypoint_confidences)
             if result.held:
                 return Classification.VIOLATION, result
+            if item in self.bilateral_items:
+                det_center = bbox_center(det["bbox"])
+                for kp_name, kp in visible_points.items():
+                    if kp_name in covered_points:
+                        continue
+                    if not point_in_or_near_bbox(kp, det["bbox"], self.bilateral_bbox_pad_px):
+                        continue
+                    limit = max(8.0, float(rule.distance_threshold_px) * self.bilateral_distance_ratio)
+                    if distance(det_center, kp) <= limit:
+                        covered_points.add(kp_name)
             if result.bound and (best_result is None or result.confidence > best_result.confidence):
                 best_result = result
+
+        if item in self.bilateral_items and len(visible_points) >= 2:
+            if len(covered_points) < len(visible_points):
+                return Classification.VIOLATION_TENTATIVE, None
 
         if best_result is not None:
             return Classification.COMPLIANT, best_result
         return Classification.VIOLATION_TENTATIVE, None
+
+    def _visible_points_for_rule(
+        self,
+        rule: PPERule,
+        keypoints: KeypointMap,
+        keypoint_confidences: ConfidenceMap,
+        frame_shape: Tuple[int, int, int],
+    ) -> Dict[str, Point]:
+        h, w = frame_shape[:2]
+        visible: Dict[str, Point] = {}
+        for kp_name in rule.expected_keypoints:
+            conf = keypoint_confidences.get(kp_name, 0.0)
+            point = keypoints.get(kp_name)
+            if point is None or conf < self.keypoint_conf_floor:
+                continue
+            x, y = point
+            if x < 0 or y < 0 or x >= w or y >= h:
+                continue
+            visible[kp_name] = point
+        return visible
 
     def _required_points_observable(
         self,
@@ -235,6 +297,16 @@ def bbox_center(box: BBox) -> Point:
 
 def distance(a: Point, b: Point) -> float:
     return float(np.hypot(a[0] - b[0], a[1] - b[1]))
+
+
+def point_in_or_near_bbox(point: Point, bbox: BBox, pad: float = 0.0) -> bool:
+    x, y = point
+    return (
+        x >= (bbox[0] - pad)
+        and x <= (bbox[2] + pad)
+        and y >= (bbox[1] - pad)
+        and y <= (bbox[3] + pad)
+    )
 
 
 def iou(a: BBox, b: BBox) -> float:

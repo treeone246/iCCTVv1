@@ -189,6 +189,8 @@ class MonitoringPipeline:
         self.strict_spatial_items = set(
             str(x) for x in verifier_cfg.get("strict_spatial_items", ["helmet"])
         )
+        # Enforce spatial binding for limb PPE to avoid false "compliant" rescues.
+        self.strict_spatial_items.update({"gloves", "boots"})
         self.strict_spatial_require_bound = bool(
             verifier_cfg.get("strict_spatial_require_bound", True)
         )
@@ -380,16 +382,6 @@ class MonitoringPipeline:
         person_payloads: List[PersonPayload] = []
         person_profile_map: Dict[int, Dict[str, Any]] = {}
         for person in tracked_people:
-            helmet_color, person_status, helmet_color_conf = self._infer_person_helmet_profile(
-                person=person,
-                ppe_detections=ppe_detections,
-                frame=frame,
-            )
-            person_profile_map[int(person.person_id)] = {
-                "helmet_color": helmet_color,
-                "person_status": person_status,
-                "helmet_color_confidence": helmet_color_conf,
-            }
             per_item_state: Dict[str, Classification] = {}
             per_item_state_raw: Dict[str, Classification] = {}
             per_item_reason: Dict[str, str] = {}
@@ -442,6 +434,25 @@ class MonitoringPipeline:
                         item=item,
                         alert_status=change.alert_status.value,
                     )
+
+            helmet_is_worn_bound = self._is_item_spatially_bound(
+                person=person,
+                ppe_detections=ppe_detections,
+                item="helmet",
+                frame_shape=frame.shape,
+            )
+            helmet_color, person_status, helmet_color_conf = ("unknown", "Unknown role", 0.0)
+            if helmet_is_worn_bound:
+                helmet_color, person_status, helmet_color_conf = self._infer_person_helmet_profile(
+                    person=person,
+                    ppe_detections=ppe_detections,
+                    frame=frame,
+                )
+            person_profile_map[int(person.person_id)] = {
+                "helmet_color": helmet_color,
+                "person_status": person_status,
+                "helmet_color_confidence": helmet_color_conf,
+            }
 
             overall = self._overall_status(per_item_state)
             self.event_writer.emit_person_observation(
@@ -1060,7 +1071,16 @@ class MonitoringPipeline:
             if person is not None:
                 person_crop_b64 = self._encode_crop_base64(self._crop_to_bbox(frame, person.bbox))
                 item_crop_b64 = self._encode_crop_base64(self._crop_for_item(frame, person, item))
-                if item == "helmet" and helmet_color == "unknown":
+                if (
+                    item == "helmet"
+                    and helmet_color == "unknown"
+                    and self._is_item_spatially_bound(
+                        person=person,
+                        ppe_detections=ppe_detections,
+                        item="helmet",
+                        frame_shape=frame.shape,
+                    )
+                ):
                     det_color, det_status, det_conf = self._infer_person_helmet_profile(
                         person=person,
                         ppe_detections=ppe_detections,
@@ -1199,6 +1219,32 @@ class MonitoringPipeline:
 
     def _status_for_helmet_color(self, helmet_color: str) -> str:
         return HELMET_COLOR_TO_STATUS.get(str(helmet_color).lower(), "Unknown role")
+
+    def _is_item_spatially_bound(
+        self,
+        *,
+        person: TrackedPerson,
+        ppe_detections: List[PPEDetection],
+        item: str,
+        frame_shape: tuple[int, int, int],
+    ) -> bool:
+        detection_dicts = [
+            {"label": det.label, "bbox": det.bbox, "conf": det.conf}
+            for det in ppe_detections
+        ]
+        classification, bind = self.association.classify_item(
+            item=item,
+            keypoints=person.keypoints,
+            keypoint_confidences=person.keypoint_confidences,
+            ppe_detections=detection_dicts,
+            frame_shape=frame_shape,
+        )
+        return bool(
+            classification == Classification.COMPLIANT
+            and bind is not None
+            and getattr(bind, "bound", False)
+            and not getattr(bind, "held", False)
+        )
 
     def _infer_person_helmet_profile(
         self,

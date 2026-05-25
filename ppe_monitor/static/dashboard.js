@@ -46,6 +46,8 @@ const trendState = {
   memPct: [],
   rssMb: [],
 };
+const violationCardCache = new Map();
+const VIOLATION_CARD_TTL_MS = 120000;
 
 settingsBtn.addEventListener("click", () => settingsDrawer.classList.remove("hidden"));
 closeSettingsBtn.addEventListener("click", () => settingsDrawer.classList.add("hidden"));
@@ -404,12 +406,24 @@ function drawTrendChart(canvas, seriesList, colors, labels) {
   }
 }
 
-function renderViolationCards(alerts) {
+function renderViolationCards(alerts, frameTimestampSec) {
   if (!violationCardsPanel) {
     return;
   }
+  const nowMs = Date.now();
+  const frameMs = Number(frameTimestampSec || 0) > 0 ? Number(frameTimestampSec) * 1000 : nowMs;
+  for (const alert of alerts || []) {
+    const key = `${alert.person_id}:${alert.item}`;
+    violationCardCache.set(key, { ...alert, _last_seen_ms: frameMs });
+  }
+  for (const [key, cached] of Array.from(violationCardCache.entries())) {
+    if ((nowMs - Number(cached?._last_seen_ms || 0)) > VIOLATION_CARD_TTL_MS) {
+      violationCardCache.delete(key);
+    }
+  }
+
   violationCardsPanel.innerHTML = "";
-  const sorted = [...(alerts || [])].sort(
+  const sorted = Array.from(violationCardCache.values()).sort(
     (a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0),
   );
   if (sorted.length === 0) {
@@ -433,7 +447,8 @@ function renderViolationCards(alerts) {
     meta.className = "violation-meta";
     const ts = new Date((alert.timestamp || 0) * 1000).toLocaleString();
     const helmetColor = String(alert.helmet_color || "unknown").toUpperCase();
-    meta.textContent = `${ts} | ${alert.person_status || "Unknown role"} | Helmet color: ${helmetColor}`;
+    const lastSeen = new Date(Number(alert._last_seen_ms || nowMs)).toLocaleTimeString();
+    meta.textContent = `${ts} | ${alert.person_status || "Unknown role"} | Helmet color: ${helmetColor} | Updated: ${lastSeen}`;
     card.appendChild(meta);
 
     const reason = document.createElement("div");
@@ -489,7 +504,7 @@ function updatePanels(payload) {
   const persons = payload.persons || [];
   renderPPEStatusDashboard(persons, metrics);
   renderComputePanel(metrics);
-  renderViolationCards(payload.active_alerts || []);
+  renderViolationCards(payload.active_alerts || [], payload.timestamp);
 
   personsPanel.innerHTML = "";
   for (const person of persons) {
