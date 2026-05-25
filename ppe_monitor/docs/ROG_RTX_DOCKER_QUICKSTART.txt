@@ -1,0 +1,82 @@
+ROG RTX LAPTOP - PPE MONITOR DOCKER QUICKSTART (WINDOWS POWERSHELL)
+===================================================================
+
+Copy-paste these commands in PowerShell (run as normal user unless your IT policy requires admin).
+
+-------------------------------------------------------------------
+0) Go to project
+-------------------------------------------------------------------
+cd C:\iCCTVv1\ppe_monitor
+
+-------------------------------------------------------------------
+1) Preflight checks (WSL2 + Docker + NVIDIA + project files)
+-------------------------------------------------------------------
+# Full check (includes GPU container test)
+powershell -ExecutionPolicy Bypass -File .\scripts\preflight_windows_gpu.ps1
+
+# Faster check (skip GPU container pull/test)
+# powershell -ExecutionPolicy Bypass -File .\scripts\preflight_windows_gpu.ps1 -SkipGpuContainerTest
+
+-------------------------------------------------------------------
+2) Build and run RTX container
+-------------------------------------------------------------------
+docker compose -f docker-compose.rtx.yml up --build -d
+
+-------------------------------------------------------------------
+3) Verify app is up
+-------------------------------------------------------------------
+Invoke-RestMethod http://localhost:8000/health
+Invoke-RestMethod http://localhost:8000/api/runtime/acceleration | ConvertTo-Json -Depth 8
+
+-------------------------------------------------------------------
+4) Open dashboard
+-------------------------------------------------------------------
+Start-Process "http://localhost:8000"
+
+-------------------------------------------------------------------
+5) View live logs
+-------------------------------------------------------------------
+docker compose -f docker-compose.rtx.yml logs -f
+
+-------------------------------------------------------------------
+6) Stop app
+-------------------------------------------------------------------
+docker compose -f docker-compose.rtx.yml down
+
+-------------------------------------------------------------------
+7) Restart app later (without rebuild)
+-------------------------------------------------------------------
+docker compose -f docker-compose.rtx.yml up -d
+
+-------------------------------------------------------------------
+8) Rebuild from scratch (if dependencies changed)
+-------------------------------------------------------------------
+docker compose -f docker-compose.rtx.yml down
+docker compose -f docker-compose.rtx.yml build --no-cache
+docker compose -f docker-compose.rtx.yml up -d
+
+-------------------------------------------------------------------
+9) If you use Ollama on Windows host
+-------------------------------------------------------------------
+In config.yaml set:
+verifier:
+  ollama:
+    host: "http://host.docker.internal:11434"
+
+Then restart container:
+docker compose -f docker-compose.rtx.yml down
+docker compose -f docker-compose.rtx.yml up -d
+
+-------------------------------------------------------------------
+10) Quick troubleshooting
+-------------------------------------------------------------------
+# Docker command not found:
+# - Start Docker Desktop, wait until "Engine running", then reopen PowerShell.
+
+# Port 8000 already used:
+# - Stop old container or app on port 8000, then retry.
+
+# GPU not detected in container:
+# - Check preflight again:
+powershell -ExecutionPolicy Bypass -File .\scripts\preflight_windows_gpu.ps1
+
