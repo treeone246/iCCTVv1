@@ -1,0 +1,26 @@
+services:
+  ppe-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson
+      args:
+        # Match this tag with your JetPack/L4T host version when needed.
+        # Example for JetPack 6.2: r36.4.0 / r36.4.3 depending on your image availability.
+        JETSON_BASE_IMAGE: ${JETSON_BASE_IMAGE:-nvcr.io/nvidia/l4t-jetpack:r36.4.0}
+    image: ppe-monitor:jetson-cuda
+    container_name: ppe-monitor-jetson
+    ports:
+      - "8000:8000"
+    # Jetson deployments commonly use runtime=nvidia.
+    runtime: nvidia
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config.yaml:/app/config.yaml:rw
+      - ./models:/app/models:ro
+      - ./videos:/app/videos:ro
+      - ./outputs:/app/outputs:rw
+    restart: unless-stopped

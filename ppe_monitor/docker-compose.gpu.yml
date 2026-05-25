@@ -1,0 +1,21 @@
+services:
+  ppe-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.rtx
+    image: ppe-monitor:rtx-cuda
+    container_name: ppe-monitor-rtx
+    ports:
+      - "8000:8000"
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config.yaml:/app/config.yaml:rw
+      - ./models:/app/models:ro
+      - ./videos:/app/videos:ro
+      - ./outputs:/app/outputs:rw
+    restart: unless-stopped

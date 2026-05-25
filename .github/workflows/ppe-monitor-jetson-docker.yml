@@ -1,0 +1,40 @@
+name: PPE Monitor Jetson Docker Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      jetson_base_image:
+        description: "Jetson base image tag (match host JetPack/L4T)"
+        required: false
+        default: "nvcr.io/nvidia/l4t-jetpack:r36.4.0"
+
+jobs:
+  jetson-build-publish:
+    runs-on: [self-hosted, linux, arm64, jetson]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Jetson image
+        run: |
+          docker build \
+            -f ppe_monitor/Dockerfile.jetson \
+            --build-arg JETSON_BASE_IMAGE="${{ github.event.inputs.jetson_base_image }}" \
+            -t ghcr.io/${{ github.repository_owner }}/ppe-monitor:jetson-latest \
+            -t ghcr.io/${{ github.repository_owner }}/ppe-monitor:jetson-${{ github.sha }} \
+            ppe_monitor
+
+      - name: Push Jetson image
+        run: |
+          docker push ghcr.io/${{ github.repository_owner }}/ppe-monitor:jetson-latest
+          docker push ghcr.io/${{ github.repository_owner }}/ppe-monitor:jetson-${{ github.sha }}

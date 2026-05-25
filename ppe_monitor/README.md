@@ -219,6 +219,71 @@ export GST_PLUGIN_PATH=/opt/nvidia/deepstream/deepstream/lib/gst-plugins:${GST_P
 export CUDA_VER=12.6
 ```
 
+### Docker (CUDA GPU)
+
+One CUDA image does **not** reliably fit both:
+- x86_64 RTX-class GPUs (desktop/laptop/server), and
+- Jetson L4T devices (ARM64 + JetPack/L4T userspace constraints).
+
+This repo provides both targets from one codebase:
+- `Dockerfile.rtx` + `docker-compose.rtx.yml` for RTX/x86_64
+- `Dockerfile.jetson` + `docker-compose.jetson.yml` for Jetson/L4T
+- `requirements-docker.txt` for RTX image dependencies
+- `requirements-jetson-orin-nano.txt` for Jetson image dependencies
+
+Build image (RTX/x86_64):
+
+```bash
+cd ppe_monitor
+docker build -f Dockerfile.rtx -t ppe-monitor:rtx-cuda .
+```
+
+Run (RTX/x86_64, single command):
+
+```bash
+docker run --rm -it --gpus all \
+  -p 8000:8000 \
+  -v "$(pwd)/config.yaml:/app/config.yaml:rw" \
+  -v "$(pwd)/models:/app/models:ro" \
+  -v "$(pwd)/videos:/app/videos:ro" \
+  -v "$(pwd)/outputs:/app/outputs:rw" \
+  ppe-monitor:rtx-cuda
+```
+
+Run with Compose (RTX/x86_64):
+
+```bash
+cd ppe_monitor
+docker compose -f docker-compose.rtx.yml up --build
+```
+
+Run with Compose (Jetson):
+
+```bash
+cd ppe_monitor
+# Optional: export JETSON_BASE_IMAGE to match your host JetPack/L4T tag
+# export JETSON_BASE_IMAGE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
+docker compose -f docker-compose.jetson.yml up --build
+```
+
+Windows preflight helper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\preflight_windows_gpu.ps1
+```
+
+Check GPU from inside container:
+
+```bash
+docker exec -it ppe-monitor-rtx nvidia-smi
+```
+
+Notes:
+- Host must have NVIDIA driver + NVIDIA Container Toolkit installed.
+- For laptop testing, keep models/videos outside the image and mount them as volumes (as above).
+- If Ollama runs on host, set verifier host in `config.yaml` to a reachable address from container (for example host gateway on Linux).
+- Jetson containers should use a Jetson-compatible `l4t-jetpack` base tag that matches host JetPack/L4T.
+
 ## 6. Configuration (`config.yaml`)
 
 All keys below are current defaults from [`config.yaml`](config.yaml).
