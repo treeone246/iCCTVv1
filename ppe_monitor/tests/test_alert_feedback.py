@@ -28,6 +28,7 @@ def test_acknowledge_updates_stats(tmp_path: Path) -> None:
     assert stats["total_feedback"] == 1
     assert stats["acknowledged"] == 1
     assert stats["by_item"]["helmet"]["acknowledged"] == 1
+    assert store.feedback_label("a1") == "acknowledged"
 
 
 def test_unacknowledged_alert_auto_closed_when_cleared(tmp_path: Path) -> None:
@@ -43,4 +44,4 @@ def test_unacknowledged_alert_auto_closed_when_cleared(tmp_path: Path) -> None:
     assert stats["acknowledged"] == 0
     assert stats["not_acknowledged"] == 1
     assert stats["by_item"]["gloves"]["not_acknowledged"] == 1
-
+    assert store.feedback_label("a2") == "not_acknowledged"

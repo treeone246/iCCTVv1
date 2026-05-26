@@ -36,6 +36,7 @@ const STATUS_COLOR = {
 };
 
 const acknowledgedAlerts = new Set();
+const notAcknowledgedAlerts = new Set();
 let pendingBlob = null;
 const REQUIRED_ITEMS = ["helmet", "gloves", "coverall", "boots", "goggles"];
 let latestJetsonSnapshot = null;
@@ -551,13 +552,13 @@ async function refreshAckStats() {
   }
 }
 
-async function acknowledgeAlert(alert, note = "") {
+async function submitAlertFeedback(alert, acknowledged = true, note = "") {
   const payload = {
     alert_id: alert.alert_id,
     person_id: Number(alert.person_id ?? -1),
     display_id: String(alert.display_id || ""),
     item: String(alert.item || ""),
-    acknowledged: true,
+    acknowledged: Boolean(acknowledged),
     note: String(note || ""),
     positive_conf: Number(alert.positive_conf || 0),
     negative_conf: Number(alert.negative_conf || 0),
@@ -627,10 +628,19 @@ function updatePanels(payload) {
       acknowledgedAlerts.delete(existingId);
     }
   }
+  for (const existingId of Array.from(notAcknowledgedAlerts)) {
+    if (!activeIds.has(existingId)) {
+      notAcknowledgedAlerts.delete(existingId);
+    }
+  }
 
   for (const alert of payload.active_alerts || []) {
-    if (alert.acknowledged === true) {
+    if (alert.feedback_label === "acknowledged" || alert.acknowledged === true) {
       acknowledgedAlerts.add(alert.alert_id);
+      notAcknowledgedAlerts.delete(alert.alert_id);
+    } else if (alert.feedback_label === "not_acknowledged") {
+      notAcknowledgedAlerts.add(alert.alert_id);
+      acknowledgedAlerts.delete(alert.alert_id);
     }
     const card = document.createElement("div");
     card.className = "alert-card";
@@ -644,32 +654,83 @@ function updatePanels(payload) {
       <div>${ts}</div>
     `;
 
-    if (alert.evidence_jpeg_base64) {
+    const ppeRoiB64 = alert.item_crop_jpeg_base64 || alert.evidence_jpeg_base64 || null;
+    if (ppeRoiB64) {
+      const roiLabel = document.createElement("div");
+      roiLabel.className = "alert-roi-label";
+      roiLabel.textContent = "Violation PPE ROI";
+      card.appendChild(roiLabel);
+
       const image = document.createElement("img");
       image.className = "alert-evidence";
-      image.alt = `Evidence for ${alert.item} person ${alert.person_id}`;
-      image.src = `data:image/jpeg;base64,${alert.evidence_jpeg_base64}`;
+      image.alt = `Violation ROI for ${alert.item} ${personTag}`;
+      image.src = `data:image/jpeg;base64,${ppeRoiB64}`;
       card.appendChild(image);
+    }
+    if (alert.person_crop_jpeg_base64) {
+      const personLabel = document.createElement("div");
+      personLabel.className = "alert-roi-label";
+      personLabel.textContent = "Person ROI";
+      card.appendChild(personLabel);
+
+      const personImg = document.createElement("img");
+      personImg.className = "alert-evidence";
+      personImg.alt = `Person ROI for ${personTag}`;
+      personImg.src = `data:image/jpeg;base64,${alert.person_crop_jpeg_base64}`;
+      card.appendChild(personImg);
     }
 
     const ackBtn = document.createElement("button");
     ackBtn.className = "icon-btn";
+    const nackBtn = document.createElement("button");
+    nackBtn.className = "icon-btn";
+
     const isAcknowledged = acknowledgedAlerts.has(alert.alert_id);
+    const isNotAcknowledged = notAcknowledgedAlerts.has(alert.alert_id);
     ackBtn.textContent = isAcknowledged ? "Acknowledged" : "Acknowledge";
-    ackBtn.disabled = isAcknowledged;
+    nackBtn.textContent = isNotAcknowledged ? "Not Acknowledged" : "Do Not Acknowledge";
+    ackBtn.disabled = isAcknowledged || isNotAcknowledged;
+    nackBtn.disabled = isAcknowledged || isNotAcknowledged;
+
     ackBtn.onclick = async () => {
       ackBtn.disabled = true;
+      nackBtn.disabled = true;
       ackBtn.textContent = "Saving...";
       try {
-        await acknowledgeAlert(alert);
+        await submitAlertFeedback(alert, true, "operator_acknowledged_alert");
         acknowledgedAlerts.add(alert.alert_id);
+        notAcknowledgedAlerts.delete(alert.alert_id);
         ackBtn.textContent = "Acknowledged";
+        nackBtn.textContent = "Do Not Acknowledge";
       } catch (err) {
         ackBtn.disabled = false;
+        nackBtn.disabled = false;
         ackBtn.textContent = "Retry Ack";
       }
     };
-    card.appendChild(ackBtn);
+
+    nackBtn.onclick = async () => {
+      ackBtn.disabled = true;
+      nackBtn.disabled = true;
+      nackBtn.textContent = "Saving...";
+      try {
+        await submitAlertFeedback(alert, false, "operator_did_not_acknowledge");
+        notAcknowledgedAlerts.add(alert.alert_id);
+        acknowledgedAlerts.delete(alert.alert_id);
+        nackBtn.textContent = "Not Acknowledged";
+        ackBtn.textContent = "Acknowledge";
+      } catch (err) {
+        ackBtn.disabled = false;
+        nackBtn.disabled = false;
+        nackBtn.textContent = "Retry No-Ack";
+      }
+    };
+
+    const actionRow = document.createElement("div");
+    actionRow.className = "alert-actions";
+    actionRow.appendChild(ackBtn);
+    actionRow.appendChild(nackBtn);
+    card.appendChild(actionRow);
     alertsPanel.appendChild(card);
   }
 }

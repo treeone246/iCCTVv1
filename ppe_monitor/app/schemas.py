@@ -103,6 +103,7 @@ class AlertPayload(BaseModel):
     positive_conf: float = 0.0
     negative_conf: float = 0.0
     acknowledged: bool = False
+    feedback_label: str = "none"
 
 
 class MetricsPayload(BaseModel):

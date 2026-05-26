@@ -175,6 +175,18 @@ body {
   border: 0.5px solid var(--line);
 }
 
+.alert-roi-label {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.alert-actions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
 .violation-cards-grid {
   display: grid;
   grid-template-columns: 1fr;

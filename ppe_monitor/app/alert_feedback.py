@@ -158,6 +158,14 @@ class AlertFeedbackStore:
             latest = self._latest_by_alert_id.get(str(alert_id), {})
             return bool(latest.get("acknowledged", False))
 
+    def feedback_label(self, alert_id: str) -> str:
+        """Return latest operator feedback label for an alert."""
+        with self._lock:
+            latest = self._latest_by_alert_id.get(str(alert_id), {})
+        if not latest:
+            return "none"
+        return "acknowledged" if bool(latest.get("acknowledged", False)) else "not_acknowledged"
+
     def stats(self) -> dict[str, Any]:
         with self._lock:
             records = list(self._records)
@@ -216,4 +224,3 @@ class AlertFeedbackStore:
             else 0.0,
             "by_item": by_item_out,
         }
-
