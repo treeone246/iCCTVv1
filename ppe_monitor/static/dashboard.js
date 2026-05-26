@@ -2,6 +2,7 @@ const canvas = document.getElementById("overlayCanvas");
 const ctx = canvas.getContext("2d");
 const personsPanel = document.getElementById("personsPanel");
 const alertsPanel = document.getElementById("alertsPanel");
+const ackStatsBar = document.getElementById("ackStatsBar");
 const ppeStatusPanel = document.getElementById("ppeStatusPanel");
 const violationCardsPanel = document.getElementById("violationCardsPanel");
 
@@ -48,6 +49,7 @@ const trendState = {
 };
 const violationCardCache = new Map();
 const VIOLATION_CARD_TTL_MS = 120000;
+let latestAckStats = null;
 
 settingsBtn.addEventListener("click", () => settingsDrawer.classList.remove("hidden"));
 closeSettingsBtn.addEventListener("click", () => settingsDrawer.classList.add("hidden"));
@@ -110,7 +112,8 @@ function drawPeople(persons) {
       person.helmet_color && person.helmet_color !== "unknown"
         ? ` [${String(person.helmet_color).toUpperCase()}]`
         : "";
-    ctx.fillText(`ID ${person.person_id}${helmetTag}`, x1, Math.max(12, y1 - 4));
+    const displayId = person.display_id || `ID_${person.person_id}`;
+    ctx.fillText(`${displayId}${helmetTag}`, x1, Math.max(12, y1 - 4));
 
     drawSkeleton(person.keypoints, color);
   }
@@ -423,10 +426,10 @@ function renderViolationCards(alerts, frameTimestampSec) {
   }
 
   violationCardsPanel.innerHTML = "";
-  const sorted = Array.from(violationCardCache.values()).sort(
+  const allAlerts = Array.from(violationCardCache.values()).sort(
     (a, b) => Number(b?.timestamp || 0) - Number(a?.timestamp || 0),
   );
-  if (sorted.length === 0) {
+  if (allAlerts.length === 0) {
     const empty = document.createElement("div");
     empty.className = "violation-empty";
     empty.textContent = "No active violations.";
@@ -434,64 +437,145 @@ function renderViolationCards(alerts, frameTimestampSec) {
     return;
   }
 
-  for (const alert of sorted) {
-    const card = document.createElement("article");
-    card.className = "violation-card";
-
-    const header = document.createElement("div");
-    header.className = "violation-header";
-    header.textContent = `Person ${alert.person_id} - ${String(alert.item || "").toUpperCase()} VIOLATION`;
-    card.appendChild(header);
-
-    const meta = document.createElement("div");
-    meta.className = "violation-meta";
-    const ts = new Date((alert.timestamp || 0) * 1000).toLocaleString();
-    const helmetColor = String(alert.helmet_color || "unknown").toUpperCase();
-    const lastSeen = new Date(Number(alert._last_seen_ms || nowMs)).toLocaleTimeString();
-    meta.textContent = `${ts} | ${alert.person_status || "Unknown role"} | Helmet color: ${helmetColor} | Updated: ${lastSeen}`;
-    card.appendChild(meta);
-
-    const reason = document.createElement("div");
-    reason.className = "violation-reason";
-    reason.textContent = alert.reason || "No reason provided.";
-    card.appendChild(reason);
-
-    const media = document.createElement("div");
-    media.className = "violation-media";
-
-    const addThumb = (title, b64) => {
-      if (!b64) {
-        return;
-      }
-      const wrap = document.createElement("div");
-      wrap.className = "violation-thumb-wrap";
-
-      const label = document.createElement("div");
-      label.className = "violation-thumb-label";
-      label.textContent = title;
-      wrap.appendChild(label);
-
-      const img = document.createElement("img");
-      img.className = "violation-thumb";
-      img.alt = `${title} for person ${alert.person_id}`;
-      img.src = `data:image/jpeg;base64,${b64}`;
-      wrap.appendChild(img);
-      media.appendChild(wrap);
-    };
-
-    addThumb("Person ROI", alert.person_crop_jpeg_base64);
-    addThumb("PPE Item ROI", alert.item_crop_jpeg_base64 || alert.evidence_jpeg_base64);
-
-    if (!media.hasChildNodes()) {
-      const missing = document.createElement("div");
-      missing.className = "violation-empty";
-      missing.textContent = "No ROI image available.";
-      media.appendChild(missing);
+  const grouped = new Map();
+  for (const alert of allAlerts) {
+    const key = alert.display_id || `ID_${alert.person_id}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, []);
     }
-
-    card.appendChild(media);
-    violationCardsPanel.appendChild(card);
+    grouped.get(key).push(alert);
   }
+
+  for (const [personKey, groupAlerts] of grouped.entries()) {
+    const group = document.createElement("section");
+    group.className = "violation-person-group";
+
+    const groupHeader = document.createElement("div");
+    groupHeader.className = "violation-person-header";
+    groupHeader.textContent = personKey;
+    group.appendChild(groupHeader);
+
+    const row = document.createElement("div");
+    row.className = "violation-person-row";
+
+    for (const alert of groupAlerts) {
+      const card = document.createElement("article");
+      card.className = "violation-card";
+
+      const header = document.createElement("div");
+      header.className = "violation-header";
+      header.textContent = `${String(alert.item || "").toUpperCase()} VIOLATION`;
+      card.appendChild(header);
+
+      const meta = document.createElement("div");
+      meta.className = "violation-meta";
+      const ts = new Date((alert.timestamp || 0) * 1000).toLocaleString();
+      const helmetColor = String(alert.helmet_color || "unknown").toUpperCase();
+      const lastSeen = new Date(Number(alert._last_seen_ms || nowMs)).toLocaleTimeString();
+      meta.textContent = `${ts} | ${alert.person_status || "Unknown role"} | Helmet color: ${helmetColor} | Updated: ${lastSeen}`;
+      card.appendChild(meta);
+
+      const reason = document.createElement("div");
+      reason.className = "violation-reason";
+      reason.textContent = alert.reason || "No reason provided.";
+      card.appendChild(reason);
+
+      const media = document.createElement("div");
+      media.className = "violation-media";
+
+      const addThumb = (title, b64) => {
+        if (!b64) {
+          return;
+        }
+        const wrap = document.createElement("div");
+        wrap.className = "violation-thumb-wrap";
+
+        const label = document.createElement("div");
+        label.className = "violation-thumb-label";
+        label.textContent = title;
+        wrap.appendChild(label);
+
+        const img = document.createElement("img");
+        img.className = "violation-thumb";
+        img.alt = `${title} for person ${alert.person_id}`;
+        img.src = `data:image/jpeg;base64,${b64}`;
+        wrap.appendChild(img);
+        media.appendChild(wrap);
+      };
+
+      addThumb("Person ROI", alert.person_crop_jpeg_base64);
+      addThumb("PPE Item ROI", alert.item_crop_jpeg_base64 || alert.evidence_jpeg_base64);
+
+      if (!media.hasChildNodes()) {
+        const missing = document.createElement("div");
+        missing.className = "violation-empty";
+        missing.textContent = "No ROI image available.";
+        media.appendChild(missing);
+      }
+
+      card.appendChild(media);
+      row.appendChild(card);
+    }
+    group.appendChild(row);
+    violationCardsPanel.appendChild(group);
+  }
+}
+
+function renderAckStats(stats) {
+  if (!ackStatsBar) {
+    return;
+  }
+  if (!stats || typeof stats !== "object") {
+    ackStatsBar.textContent = "Ack stats: unavailable";
+    return;
+  }
+  const total = Number(stats.total_feedback ?? 0);
+  const ack = Number(stats.acknowledged ?? 0);
+  const nack = Number(stats.not_acknowledged ?? 0);
+  const rate = Number(stats.ack_rate_pct ?? 0).toFixed(1);
+  const tAck = Number(stats.mean_time_to_ack_sec ?? 0).toFixed(2);
+  const tNack = Number(stats.mean_time_to_not_ack_sec ?? 0).toFixed(2);
+  ackStatsBar.textContent =
+    `Ack stats | total:${total} ack:${ack} not-ack:${nack} ack-rate:${rate}% ` +
+    `mean-ack:${tAck}s mean-not-ack:${tNack}s`;
+}
+
+async function refreshAckStats() {
+  try {
+    const resp = await fetch("/api/alerts/feedback/stats");
+    const stats = resp.ok ? await resp.json() : null;
+    latestAckStats = stats;
+    renderAckStats(stats);
+  } catch (err) {
+    renderAckStats(null);
+  }
+}
+
+async function acknowledgeAlert(alert, note = "") {
+  const payload = {
+    alert_id: alert.alert_id,
+    person_id: Number(alert.person_id ?? -1),
+    display_id: String(alert.display_id || ""),
+    item: String(alert.item || ""),
+    acknowledged: true,
+    note: String(note || ""),
+    positive_conf: Number(alert.positive_conf || 0),
+    negative_conf: Number(alert.negative_conf || 0),
+  };
+  const resp = await fetch("/api/alerts/acknowledge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) {
+    throw new Error(`ack_failed_${resp.status}`);
+  }
+  const out = await resp.json();
+  if (out && out.stats) {
+    latestAckStats = out.stats;
+    renderAckStats(out.stats);
+  }
+  return out;
 }
 
 function updatePanels(payload) {
@@ -510,11 +594,12 @@ function updatePanels(payload) {
   for (const person of persons) {
     const card = document.createElement("div");
     card.className = "person-card";
+    const personTag = person.display_id || `ID_${person.person_id}`;
     const helmetColor = person.helmet_color && person.helmet_color !== "unknown"
       ? String(person.helmet_color).toUpperCase()
       : "UNKNOWN";
     card.innerHTML =
-      `<div><strong>Person ${person.person_id}</strong> - ${person.overall_status}</div>` +
+      `<div><strong>${personTag}</strong> - ${person.overall_status}</div>` +
       `<div class="person-meta">${person.person_status || "Unknown role"} | Helmet: ${helmetColor}</div>`;
 
     const chipList = document.createElement("div");
@@ -544,12 +629,16 @@ function updatePanels(payload) {
   }
 
   for (const alert of payload.active_alerts || []) {
+    if (alert.acknowledged === true) {
+      acknowledgedAlerts.add(alert.alert_id);
+    }
     const card = document.createElement("div");
     card.className = "alert-card";
     const ts = new Date((alert.timestamp || 0) * 1000).toLocaleTimeString();
     const helmetColor = String(alert.helmet_color || "unknown").toUpperCase();
+    const personTag = alert.display_id || `ID_${alert.person_id}`;
     card.innerHTML = `
-      <div><strong>${alert.item}</strong> - Person ${alert.person_id}</div>
+      <div><strong>${alert.item}</strong> - ${personTag}</div>
       <div>${alert.person_status || "Unknown role"} | Helmet: ${helmetColor}</div>
       <div>${alert.reason}</div>
       <div>${ts}</div>
@@ -568,10 +657,17 @@ function updatePanels(payload) {
     const isAcknowledged = acknowledgedAlerts.has(alert.alert_id);
     ackBtn.textContent = isAcknowledged ? "Acknowledged" : "Acknowledge";
     ackBtn.disabled = isAcknowledged;
-    ackBtn.onclick = () => {
-      acknowledgedAlerts.add(alert.alert_id);
-      ackBtn.textContent = "Acknowledged";
+    ackBtn.onclick = async () => {
       ackBtn.disabled = true;
+      ackBtn.textContent = "Saving...";
+      try {
+        await acknowledgeAlert(alert);
+        acknowledgedAlerts.add(alert.alert_id);
+        ackBtn.textContent = "Acknowledged";
+      } catch (err) {
+        ackBtn.disabled = false;
+        ackBtn.textContent = "Retry Ack";
+      }
     };
     card.appendChild(ackBtn);
     alertsPanel.appendChild(card);
@@ -755,6 +851,8 @@ connect();
 refreshBehaviorPanel();
 refreshJetsonPanel();
 refreshAccelerationPanel();
+refreshAckStats();
 setInterval(refreshBehaviorPanel, 5000);
 setInterval(refreshJetsonPanel, 5000);
 setInterval(refreshAccelerationPanel, 8000);
+setInterval(refreshAckStats, 10000);

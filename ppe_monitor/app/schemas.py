@@ -72,6 +72,7 @@ class PersonPayload(BaseModel):
     """Per-person dashboard payload."""
 
     person_id: int
+    display_id: str = ""
     bbox: List[float]
     keypoints: Dict[str, KeypointPayload]
     per_item_state: Dict[str, Classification]
@@ -87,6 +88,7 @@ class AlertPayload(BaseModel):
 
     alert_id: str
     person_id: int
+    display_id: str = ""
     item: str
     status: AlertStatus
     reason: str
@@ -98,6 +100,9 @@ class AlertPayload(BaseModel):
     helmet_color_confidence: float = 0.0
     person_crop_jpeg_base64: Optional[str] = None
     item_crop_jpeg_base64: Optional[str] = None
+    positive_conf: float = 0.0
+    negative_conf: float = 0.0
+    acknowledged: bool = False
 
 
 class MetricsPayload(BaseModel):
@@ -163,3 +168,16 @@ class FramePayload(BaseModel):
     ppe_detections: List[BBoxPayload]
     active_alerts: List[AlertPayload]
     metrics: MetricsPayload
+
+
+class AlertAcknowledgeRequest(BaseModel):
+    """Dashboard/user feedback payload for one alert."""
+
+    alert_id: str
+    person_id: int
+    display_id: str = ""
+    item: str
+    acknowledged: bool = True
+    note: str = ""
+    positive_conf: float = 0.0
+    negative_conf: float = 0.0

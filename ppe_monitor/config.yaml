@@ -83,6 +83,8 @@ verifier:
   enable_vlm: true
   strict_spatial_require_bound: true
   strict_spatial_items: [helmet]
+  worn_low_conf_floor: 0.20
+  worn_low_conf_items: [goggles, gloves, boots]
   periodic_recheck_enabled: false
   periodic_recheck_seconds: 60.0
   periodic_items: [helmet, goggles, gloves, boots, coverall]
@@ -171,6 +173,12 @@ association:
   gloves_distance_px: 110
   boots_distance_px: 120
   coverall_iou_threshold: 0.05
+
+tracking:
+  display_id_enabled: true
+  max_personnel: 8
+  display_id_timeout_sec: 5.0
+  camera_id: "rig_floor_cam_01"
 
 verifier_cache:
   ttl_compliant_seconds: 8
@@ -263,6 +271,11 @@ dashboard:
   jpeg_interval_frames: 1
   max_stream_clients: 1
   metrics_window_minutes: 60
+
+alert_feedback:
+  enabled: true
+  path: "outputs/alert_feedback.jsonl"
+  max_recent_records: 10000
 
 compute_monitor:
   enabled: true

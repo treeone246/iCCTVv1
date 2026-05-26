@@ -151,6 +151,15 @@ body {
   background: #fff;
 }
 
+.ack-stats {
+  border: 0.5px solid var(--line);
+  background: #fafbfd;
+  color: var(--muted);
+  font-size: 12px;
+  padding: 8px;
+  margin-bottom: 8px;
+}
+
 .person-meta {
   margin-top: 4px;
   color: var(--muted);
@@ -168,12 +177,36 @@ body {
 
 .violation-cards-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  grid-template-columns: 1fr;
   gap: 10px;
-  max-height: 420px;
+  max-height: 560px;
+}
+
+.violation-person-group {
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  background: #fdfefe;
+  padding: 8px;
+}
+
+.violation-person-header {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.violation-person-row {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 2px;
 }
 
 .violation-card {
+  min-width: 260px;
+  max-width: 320px;
+  flex: 0 0 auto;
   border: 0.5px solid var(--line);
   border-left: 3px solid var(--bad);
   background: #fff;
@@ -484,5 +517,16 @@ fieldset {
 
   .violation-media {
     grid-template-columns: 1fr;
+  }
+
+  .violation-person-row {
+    display: grid;
+    grid-template-columns: 1fr;
+    overflow-x: visible;
+  }
+
+  .violation-card {
+    min-width: 100%;
+    max-width: 100%;
   }
 }

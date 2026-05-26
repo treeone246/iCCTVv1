@@ -11,6 +11,7 @@ import yaml
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
+from .alert_feedback import AlertFeedbackStore
 from .ai_behavior_agent.agent import BehaviorAgentService
 from .ai_behavior_agent.schemas import empty_agent_output
 from .deepstream import DeepStreamPipelineRunner, build_deepstream_settings
@@ -22,6 +23,7 @@ from .pipeline import MonitoringPipeline
 from .ppe_detector import build_alias_index
 from .runtime_backend import get_runtime_backend
 from .runtime_acceleration import summarize_runtime_acceleration
+from .schemas import AlertAcknowledgeRequest
 from .startup_check import load_runtime_components
 from .stream_guard import StreamClientGate
 from .video_source import VideoSource
@@ -139,6 +141,19 @@ async def lifespan(app: FastAPI):
     app.state.metrics_exporter = PrometheusMetricsExporter(enabled=bool(prom_cfg.get("enabled", True)))
     app.state.jetson_bridge = JetsonExporterBridge.from_app_config(config)
     app.state.performance_logger = PerformanceLogWriter(config)
+    feedback_cfg = config.get("alert_feedback", {}) or {}
+    feedback_path = _resolve_project_path(str(feedback_cfg.get("path", "outputs/alert_feedback.jsonl")))
+    app.state.alert_feedback_store = AlertFeedbackStore(
+        path=feedback_path,
+        enabled=bool(feedback_cfg.get("enabled", True)),
+        max_recent_records=int(feedback_cfg.get("max_recent_records", 10000)),
+    )
+    app.state.alert_feedback_camera_id = str(
+        (config.get("event_stream", {}) or {}).get(
+            "camera_id",
+            (config.get("performance_logging", {}) or {}).get("camera_id", "cam_01"),
+        )
+    )
     dashboard_cfg = config.get("dashboard", {}) or {}
     max_stream_clients = max(1, int(dashboard_cfg.get("max_stream_clients", 1)))
     app.state.stream_jpeg_enabled = bool(dashboard_cfg.get("stream_jpeg_enabled", True))
@@ -298,6 +313,23 @@ async def ws_stream(websocket: WebSocket) -> None:
                 per_camera_fps=per_camera_fps,
                 timestamp=payload.timestamp,
             )
+            feedback_store = getattr(app.state, "alert_feedback_store", None)
+            if feedback_store is not None:
+                active_alert_dicts: list[dict] = []
+                for alert in payload.active_alerts:
+                    acknowledged = feedback_store.is_acknowledged(alert.alert_id)
+                    alert.acknowledged = acknowledged
+                    active_alert_dicts.append(alert.model_dump())
+                feedback_camera_id = (
+                    str(getattr(app.state, "deepstream_camera_id", "cam_01"))
+                    if backend == "deepstream"
+                    else str(getattr(app.state, "alert_feedback_camera_id", "cam_01"))
+                )
+                feedback_store.observe_active_alerts(
+                    alerts=active_alert_dicts,
+                    camera_id=feedback_camera_id,
+                    observed_ts=float(payload.timestamp),
+                )
             if include_stream_jpeg:
                 await websocket.send_bytes(jpeg)
             await websocket.send_json(payload.model_dump())
@@ -378,6 +410,38 @@ async def runtime_acceleration() -> dict:
     summary = summarize_runtime_acceleration(provider_info)
     summary["provider_info"] = provider_info
     return summary
+
+
+@app.post("/api/alerts/acknowledge")
+async def acknowledge_alert(request: AlertAcknowledgeRequest) -> dict:
+    store = getattr(app.state, "alert_feedback_store", None)
+    if store is None:
+        return {"ok": False, "error": "alert_feedback_store_not_initialized"}
+    camera_id = str(getattr(app.state, "alert_feedback_camera_id", "cam_01"))
+    record = store.acknowledge(
+        alert_id=request.alert_id,
+        person_id=int(request.person_id),
+        display_id=str(request.display_id),
+        item=str(request.item),
+        camera_id=camera_id,
+        note=str(request.note),
+        acknowledged=bool(request.acknowledged),
+        positive_conf=float(request.positive_conf),
+        negative_conf=float(request.negative_conf),
+    )
+    return {
+        "ok": True,
+        "record": record,
+        "stats": store.stats(),
+    }
+
+
+@app.get("/api/alerts/feedback/stats")
+async def alert_feedback_stats() -> dict:
+    store = getattr(app.state, "alert_feedback_store", None)
+    if store is None:
+        return {"enabled": False, "error": "alert_feedback_store_not_initialized"}
+    return store.stats()
 
 
 @app.get("/metrics")

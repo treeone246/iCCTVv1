@@ -118,6 +118,7 @@ class MonitoringPipeline:
         self.config = config
         self.required_ppe: List[str] = list(config["required_ppe"])
         self.last_item_reason: Dict[Tuple[int, str], str] = {}
+        self.last_item_conf: Dict[Tuple[int, str], Tuple[float, float]] = {}
 
         self.association = AssociationEngine(config)
         self.cache = VerifierCache()
@@ -186,11 +187,9 @@ class MonitoringPipeline:
             str(k): float(v)
             for k, v in dict(low_conf_esc_cfg.get("per_item_thresholds", {})).items()
         }
-        self.strict_spatial_items = set(
-            str(x) for x in verifier_cfg.get("strict_spatial_items", ["helmet"])
-        )
-        # Enforce spatial binding for limb PPE to avoid false "compliant" rescues.
-        self.strict_spatial_items.update({"gloves", "boots"})
+        self.strict_spatial_items = set(str(x) for x in verifier_cfg.get("strict_spatial_items", ["helmet"]))
+        # Enforce spatial binding for noisy PPE classes to avoid false "compliant" rescues.
+        self.strict_spatial_items.update({"gloves", "boots", "coverall"})
         self.strict_spatial_require_bound = bool(
             verifier_cfg.get("strict_spatial_require_bound", True)
         )
@@ -218,6 +217,12 @@ class MonitoringPipeline:
             str(k): float(v)
             for k, v in dict(config.get("inference", {}).get("per_item_conf_thresholds", {})).items()
         }
+        # For visually ambiguous items, low confidence "worn" detections are treated
+        # as not-worn candidates to reduce false compliant locks.
+        self.low_conf_worn_floor = float(verifier_cfg.get("worn_low_conf_floor", 0.20))
+        self.low_conf_worn_items = set(
+            str(x) for x in verifier_cfg.get("worn_low_conf_items", ["goggles", "gloves", "boots"])
+        )
 
         dash_cfg = config["dashboard"]
         self.jpeg_quality = int(dash_cfg["jpeg_quality"])
@@ -258,6 +263,27 @@ class MonitoringPipeline:
         self._last_ppe_detections: List[PPEDetection] = []
         self._last_ppe_frame_id = -1_000_000_000
         self._last_track_ids: Set[int] = set()
+        tracking_cfg = config.get("tracking", {}) or {}
+        default_camera_id = str(
+            tracking_cfg.get(
+                "camera_id",
+                config.get("event_stream", {}).get(
+                    "camera_id",
+                    config.get("performance_logging", {}).get("camera_id", "cam_01"),
+                ),
+            )
+        )
+        self.display_id_camera = self._sanitize_camera_tag(default_camera_id)
+        self.display_id_enabled = bool(tracking_cfg.get("display_id_enabled", True))
+        self.max_personnel_ids = max(1, int(tracking_cfg.get("max_personnel", 8)))
+        self.display_id_timeout_sec = float(
+            tracking_cfg.get(
+                "display_id_timeout_sec",
+                config.get("compliance_memory", {}).get("track_timeout_sec", 5.0),
+            )
+        )
+        self._display_slot_by_track: Dict[int, int] = {}
+        self._display_last_seen_ts: Dict[int, float] = {}
 
         stability_cfg = config.get("status_stability", {})
         self.stable_compliant_enter = int(stability_cfg.get("compliant_enter_frames", 2))
@@ -362,6 +388,8 @@ class MonitoringPipeline:
 
         tracked_people = tracked_people_override if tracked_people_override is not None else self.pose_tracker.track(frame)
         self._prune_stability_state(tracked_people)
+        now_ts = time.time()
+        display_id_map = self._assign_display_ids(tracked_people, now_ts=now_ts)
         if ppe_detections_override is not None:
             self._ppe_infer_calls += 1
             self.ppe_calls.append(time.time())
@@ -382,6 +410,10 @@ class MonitoringPipeline:
         person_payloads: List[PersonPayload] = []
         person_profile_map: Dict[int, Dict[str, Any]] = {}
         for person in tracked_people:
+            display_id = display_id_map.get(
+                int(person.person_id),
+                f"ID_{int(person.person_id)}-{self.display_id_camera}",
+            )
             per_item_state: Dict[str, Classification] = {}
             per_item_state_raw: Dict[str, Classification] = {}
             per_item_reason: Dict[str, str] = {}
@@ -406,6 +438,10 @@ class MonitoringPipeline:
                 if stage in {"VIOLATION_CANDIDATE", "VIOLATION_CONFIRMED"}:
                     per_item_reason[item] = stage.lower()
                 self.last_item_reason[(person.person_id, item)] = decision.reason
+                self.last_item_conf[(person.person_id, item)] = (
+                    float(decision.positive_conf),
+                    float(decision.negative_conf),
+                )
                 per_item_obs[item] = {
                     "status_raw": item_state_raw.value,
                     "status_stable": item_state.value,
@@ -449,6 +485,7 @@ class MonitoringPipeline:
                     frame=frame,
                 )
             person_profile_map[int(person.person_id)] = {
+                "display_id": display_id,
                 "helmet_color": helmet_color,
                 "person_status": person_status,
                 "helmet_color_confidence": helmet_color_conf,
@@ -466,6 +503,7 @@ class MonitoringPipeline:
             person_payloads.append(
                 PersonPayload(
                     person_id=person.person_id,
+                    display_id=display_id,
                     bbox=[float(v) for v in person.bbox],
                     keypoints={
                         name: KeypointPayload(
@@ -675,6 +713,8 @@ class MonitoringPipeline:
         stale_keys = [k for k in self._stable_states.keys() if k[0] not in active_ids]
         for key in stale_keys:
             self._stable_states.pop(key, None)
+            self.last_item_conf.pop(key, None)
+            self.last_item_reason.pop(key, None)
         stale_periodic = [k for k in self._last_periodic_verifier_ts.keys() if k[0] not in active_ids]
         for key in stale_periodic:
             self._last_periodic_verifier_ts.pop(key, None)
@@ -776,6 +816,13 @@ class MonitoringPipeline:
         person_crop = self._crop_to_bbox(frame, person.bbox)
         item_crop = self._crop_for_item(frame, person, item)
         vctx, ambiguous = self._build_verifier_context(person, item, ppe_detections, person_crop, item_crop)
+        if (
+            item in self.low_conf_worn_items
+            and base_classification == Classification.COMPLIANT
+            and float(vctx.positive_conf) < float(self.low_conf_worn_floor)
+        ):
+            base_classification = Classification.VIOLATION_TENTATIVE
+            base_reason = "worn_detection_below_conf_floor"
         low_conf_escalated = self._should_force_verifier_on_low_conf(
             item=item,
             base_classification=base_classification,
@@ -1063,9 +1110,16 @@ class MonitoringPipeline:
             )
             person = person_by_id.get(int(person_id))
             profile = person_profile_map.get(int(person_id), {})
+            display_id = str(
+                profile.get(
+                    "display_id",
+                    f"ID_{int(person_id)}-{self.display_id_camera}",
+                )
+            )
             helmet_color = str(profile.get("helmet_color", "unknown"))
             helmet_color_confidence = float(profile.get("helmet_color_confidence", 0.0))
             person_status = str(profile.get("person_status", self._status_for_helmet_color(helmet_color)))
+            positive_conf, negative_conf = self.last_item_conf.get((person_id, item), (0.0, 0.0))
             person_crop_b64: Optional[str] = None
             item_crop_b64: Optional[str] = None
             if person is not None:
@@ -1095,6 +1149,7 @@ class MonitoringPipeline:
                 AlertPayload(
                     alert_id=alert_id,
                     person_id=person_id,
+                    display_id=display_id,
                     item=item,
                     status=item_state.alert_status,
                     reason=reason,
@@ -1110,6 +1165,9 @@ class MonitoringPipeline:
                     helmet_color_confidence=helmet_color_confidence,
                     person_crop_jpeg_base64=person_crop_b64,
                     item_crop_jpeg_base64=item_crop_b64,
+                    positive_conf=float(positive_conf),
+                    negative_conf=float(negative_conf),
+                    acknowledged=False,
                 )
             )
         return alerts
@@ -1219,6 +1277,43 @@ class MonitoringPipeline:
 
     def _status_for_helmet_color(self, helmet_color: str) -> str:
         return HELMET_COLOR_TO_STATUS.get(str(helmet_color).lower(), "Unknown role")
+
+    def _sanitize_camera_tag(self, value: str) -> str:
+        raw = str(value or "cam_01").strip() or "cam_01"
+        cleaned = "".join(ch if (ch.isalnum() or ch in {"_", "-"}) else "_" for ch in raw)
+        return cleaned or "cam_01"
+
+    def _assign_display_ids(self, tracked_people: List[TrackedPerson], now_ts: float) -> Dict[int, str]:
+        if not self.display_id_enabled:
+            return {
+                int(person.person_id): f"ID_{int(person.person_id)}-{self.display_id_camera}"
+                for person in tracked_people
+            }
+        active_ids = {int(person.person_id) for person in tracked_people}
+        stale = [
+            track_id
+            for track_id, seen_ts in self._display_last_seen_ts.items()
+            if track_id not in active_ids and (now_ts - float(seen_ts)) > self.display_id_timeout_sec
+        ]
+        for track_id in stale:
+            self._display_last_seen_ts.pop(track_id, None)
+            self._display_slot_by_track.pop(track_id, None)
+
+        used_slots = {int(self._display_slot_by_track[tid]) for tid in active_ids if tid in self._display_slot_by_track}
+        slot_pool = [idx for idx in range(1, self.max_personnel_ids + 1) if idx not in used_slots]
+        out: Dict[int, str] = {}
+        for person in tracked_people:
+            track_id = int(person.person_id)
+            slot = self._display_slot_by_track.get(track_id)
+            if slot is None:
+                if slot_pool:
+                    slot = int(slot_pool.pop(0))
+                else:
+                    slot = int((abs(track_id) % self.max_personnel_ids) + 1)
+                self._display_slot_by_track[track_id] = slot
+            self._display_last_seen_ts[track_id] = now_ts
+            out[track_id] = f"ID_{int(slot)}-{self.display_id_camera}"
+        return out
 
     def _is_item_spatially_bound(
         self,
