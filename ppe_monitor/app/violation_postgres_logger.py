@@ -59,6 +59,9 @@ class ViolationPostgresLogger:
         self._duplicate_count: int = 0
         self._ingest_batches: int = 0
         self._connect_fail_count: int = 0
+        self._connect_retry_backoff_seconds = max(0.5, float(pg_cfg.get("connect_retry_backoff_seconds", 5.0)))
+        self._next_connect_attempt_ts: float = 0.0
+        self._last_connect_log_ts: float = 0.0
         if self.enabled and psycopg is None:
             self._init_error = "psycopg_not_installed"
             self.enabled = False
@@ -74,14 +77,19 @@ class ViolationPostgresLogger:
             return None
         if self._conn is not None:
             return self._conn
+        now_ts = time.time()
+        if now_ts < self._next_connect_attempt_ts:
+            raise RuntimeError("db_connect_backoff")
         try:
             self._conn = psycopg.connect(self._dsn, autocommit=True, connect_timeout=3)
             self._ensure_schema(self._conn)
             self._init_error = None
             self._last_error = None
+            self._next_connect_attempt_ts = 0.0
         except Exception as exc:
             self._connect_fail_count += 1
             self._last_error = f"db_connect_error:{type(exc).__name__}:{str(exc)}"
+            self._next_connect_attempt_ts = time.time() + self._connect_retry_backoff_seconds
             raise
         return self._conn
 
@@ -176,14 +184,17 @@ class ViolationPostgresLogger:
         except Exception as exc:
             self._init_error = f"db_connect_error:{type(exc).__name__}"
             self._last_error = self._init_error
-            print(
-                json.dumps(
-                    {
-                        "event_type": "postgres_violation_connect_error",
-                        "error": self._init_error,
-                    }
+            now_ts = time.time()
+            if now_ts - self._last_connect_log_ts >= self._connect_retry_backoff_seconds:
+                print(
+                    json.dumps(
+                        {
+                            "event_type": "postgres_violation_connect_error",
+                            "error": self._init_error,
+                        }
+                    )
                 )
-            )
+                self._last_connect_log_ts = now_ts
             self.close()
             return
         if conn is None:
@@ -313,4 +324,6 @@ class ViolationPostgresLogger:
             "db_name": self._database,
             "db_user": self._user,
             "db_password_set": bool(self._password),
+            "connect_retry_backoff_seconds": float(self._connect_retry_backoff_seconds),
+            "next_connect_attempt_ts": float(self._next_connect_attempt_ts),
         }

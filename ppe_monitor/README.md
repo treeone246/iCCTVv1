@@ -65,6 +65,17 @@ Primary users are operations/safety teams who need live compliance visibility, a
 - Active alerts are built from state machine active states in `_build_active_alerts()` in [`app/pipeline.py`](app/pipeline.py).
 - Alert payload includes evidence JPEG (base64) when available.
 
+### Violation ingest (filter + queue + optional Kafka)
+
+- Ingest manager is implemented in [`app/violation_ingest.py`](app/violation_ingest.py).
+- PostgreSQL sink is implemented in [`app/violation_postgres_logger.py`](app/violation_postgres_logger.py).
+- Optional Kafka transport is implemented in [`app/violation_kafka.py`](app/violation_kafka.py).
+- Optional Flink stream job is implemented in [`scripts/flink_violation_stream.py`](scripts/flink_violation_stream.py).
+- Runtime status endpoints:
+  - `/api/violation-ingest/status`
+  - `/api/postgres-logging/status`
+- Deployment guide: [`docs/violation_ingest_kafka_spark.md`](docs/violation_ingest_kafka_spark.md).
+
 ### Event stream writer (`detection_events.jsonl`)
 
 - Implemented in [`app/event_stream.py`](app/event_stream.py).

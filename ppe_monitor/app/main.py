@@ -26,6 +26,7 @@ from .runtime_acceleration import summarize_runtime_acceleration
 from .schemas import AlertAcknowledgeRequest
 from .startup_check import load_runtime_components
 from .stream_guard import StreamClientGate
+from .violation_ingest import ViolationIngestManager
 from .violation_postgres_logger import ViolationPostgresLogger
 from .video_source import VideoSource
 
@@ -146,6 +147,10 @@ async def lifespan(app: FastAPI):
         config=config,
         project_root=PROJECT_ROOT,
     )
+    app.state.violation_ingest = ViolationIngestManager(
+        config=config,
+        pg_logger=app.state.violation_pg_logger,
+    )
     feedback_cfg = config.get("alert_feedback", {}) or {}
     feedback_path = _resolve_project_path(str(feedback_cfg.get("path", "outputs/alert_feedback.jsonl")))
     app.state.alert_feedback_store = AlertFeedbackStore(
@@ -177,6 +182,9 @@ async def lifespan(app: FastAPI):
         if behavior_service is not None:
             behavior_service.stop()
         app.state.performance_logger.close()
+        ingest_manager = getattr(app.state, "violation_ingest", None)
+        if ingest_manager is not None:
+            ingest_manager.close()
         pg_logger = getattr(app.state, "violation_pg_logger", None)
         if pg_logger is not None:
             pg_logger.close()
@@ -322,7 +330,7 @@ async def ws_stream(websocket: WebSocket) -> None:
                 timestamp=payload.timestamp,
             )
             feedback_store = getattr(app.state, "alert_feedback_store", None)
-            pg_logger = getattr(app.state, "violation_pg_logger", None)
+            ingest_manager = getattr(app.state, "violation_ingest", None)
             active_alert_dicts: list[dict] = []
             for alert in payload.active_alerts:
                 if feedback_store is not None:
@@ -341,8 +349,8 @@ async def ws_stream(websocket: WebSocket) -> None:
                     camera_id=feedback_camera_id,
                     observed_ts=float(payload.timestamp),
                 )
-            if pg_logger is not None:
-                pg_logger.ingest_alerts(
+            if ingest_manager is not None:
+                ingest_manager.ingest_alerts(
                     alerts=active_alert_dicts,
                     camera_id=feedback_camera_id,
                 )
@@ -462,10 +470,27 @@ async def alert_feedback_stats() -> dict:
 
 @app.get("/api/postgres-logging/status")
 async def postgres_logging_status() -> dict:
-    logger = getattr(app.state, "violation_pg_logger", None)
-    if logger is None:
-        return {"enabled": False, "error": "violation_pg_logger_not_initialized"}
-    return logger.status()
+    manager = getattr(app.state, "violation_ingest", None)
+    if manager is None:
+        logger = getattr(app.state, "violation_pg_logger", None)
+        if logger is None:
+            return {"enabled": False, "error": "violation_pg_logger_not_initialized"}
+        return logger.status()
+    return manager.status().get("postgres", {"enabled": False})
+
+
+@app.get("/api/violation-ingest/status")
+async def violation_ingest_status() -> dict:
+    manager = getattr(app.state, "violation_ingest", None)
+    if manager is None:
+        logger = getattr(app.state, "violation_pg_logger", None)
+        pg_status = logger.status() if logger is not None else {"enabled": False}
+        return {
+            "enabled": False,
+            "error": "violation_ingest_not_initialized",
+            "postgres": pg_status,
+        }
+    return manager.status()
 
 
 @app.get("/metrics")

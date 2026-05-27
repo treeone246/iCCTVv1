@@ -1,0 +1,6 @@
+# Optional streaming stack for Kafka/Spark ingest pipeline.
+# Install only when you enable violation_ingest.mode: kafka or run Spark jobs.
+
+confluent-kafka==2.6.1
+pyflink==1.20.1
+pyspark==3.5.2

@@ -290,6 +290,61 @@ postgres_logging:
   local_roi_dir: "outputs/violation_roi"
   max_seen_alerts: 50000
 
+violation_ingest:
+  enabled: true
+  # direct: filter + queue -> PostgreSQL
+  # kafka:  filter + queue -> Kafka (optionally also local PostgreSQL)
+  # kafka_flink: filter + queue -> Kafka only, Flink consumes and sinks curated rows.
+  mode: "direct"
+  filter:
+    enabled: true
+    only_active: true
+    # Suppress repeated same person-item-status violations for this window.
+    repeat_suppression_seconds: 60.0
+    remember_ttl_seconds: 600.0
+    # Hard cap per unique person-item-status key.
+    max_events_per_minute_per_key: 2
+    # Ignore weak negative evidence for noisy PPE classes.
+    min_negative_confidence_default: 0.00
+    min_negative_confidence_per_item:
+      helmet: 0.00
+      coverall: 0.00
+      goggles: 0.20
+      gloves: 0.20
+      boots: 0.20
+    # If reason changes materially, allow one bypass of repeat suppression.
+    allow_reason_change_bypass: true
+  queue:
+    enabled: true
+    max_size: 5000
+    batch_size: 64
+    flush_interval_seconds: 1.0
+    drop_when_full: true
+  kafka:
+    enabled: false
+    bootstrap_servers: "127.0.0.1:9092"
+    topic: "ppe.violations.raw"
+    client_id: "ppe-monitor-edge"
+    group_id: "ppe-violation-consumer"
+    consumer_client_id: "ppe-monitor-consumer"
+    auto_offset_reset: "latest"
+    linger_ms: 10
+    delivery_timeout_ms: 5000
+    acks: "1"
+    compression_type: "lz4"
+    # Keep local PostgreSQL writes while also publishing to Kafka.
+    also_write_local: true
+  flink:
+    enabled: false
+    # Sink table used by scripts/flink_violation_stream.py
+    sink_table: "violation_logs_flink"
+    # Aggregation window for dedupe/stability in Flink job.
+    window_seconds: 60
+    parallelism: 1
+    state_ttl: "30 min"
+    sink_buffer_max_rows: 200
+    sink_buffer_interval_ms: 1000
+
 compute_monitor:
   enabled: true
   # Estimated model cost (GFLOPs per inference). Tune with your measured models.
