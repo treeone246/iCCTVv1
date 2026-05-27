@@ -277,6 +277,19 @@ alert_feedback:
   path: "outputs/alert_feedback.jsonl"
   max_recent_records: 10000
 
+postgres_logging:
+  enabled: true
+  host: "127.0.0.1"
+  port: 5432
+  database: "ppe_monitor"
+  user: "ppe_app"
+  # Leave blank to read from env PPE_MONITOR_PG_PASSWORD.
+  password: ""
+  device_id: "jetson-edge-01"
+  camera_id: "rig_floor_cam_01"
+  local_roi_dir: "outputs/violation_roi"
+  max_seen_alerts: 50000
+
 compute_monitor:
   enabled: true
   # Estimated model cost (GFLOPs per inference). Tune with your measured models.

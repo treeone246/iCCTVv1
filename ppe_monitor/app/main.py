@@ -26,6 +26,7 @@ from .runtime_acceleration import summarize_runtime_acceleration
 from .schemas import AlertAcknowledgeRequest
 from .startup_check import load_runtime_components
 from .stream_guard import StreamClientGate
+from .violation_postgres_logger import ViolationPostgresLogger
 from .video_source import VideoSource
 
 
@@ -141,6 +142,10 @@ async def lifespan(app: FastAPI):
     app.state.metrics_exporter = PrometheusMetricsExporter(enabled=bool(prom_cfg.get("enabled", True)))
     app.state.jetson_bridge = JetsonExporterBridge.from_app_config(config)
     app.state.performance_logger = PerformanceLogWriter(config)
+    app.state.violation_pg_logger = ViolationPostgresLogger(
+        config=config,
+        project_root=PROJECT_ROOT,
+    )
     feedback_cfg = config.get("alert_feedback", {}) or {}
     feedback_path = _resolve_project_path(str(feedback_cfg.get("path", "outputs/alert_feedback.jsonl")))
     app.state.alert_feedback_store = AlertFeedbackStore(
@@ -172,6 +177,9 @@ async def lifespan(app: FastAPI):
         if behavior_service is not None:
             behavior_service.stop()
         app.state.performance_logger.close()
+        pg_logger = getattr(app.state, "violation_pg_logger", None)
+        if pg_logger is not None:
+            pg_logger.close()
         if app.state.deepstream_runner is not None:
             app.state.deepstream_runner.stop()
         pipeline.event_writer.close()
@@ -314,6 +322,7 @@ async def ws_stream(websocket: WebSocket) -> None:
                 timestamp=payload.timestamp,
             )
             feedback_store = getattr(app.state, "alert_feedback_store", None)
+            pg_logger = getattr(app.state, "violation_pg_logger", None)
             if feedback_store is not None:
                 active_alert_dicts: list[dict] = []
                 for alert in payload.active_alerts:
@@ -331,6 +340,11 @@ async def ws_stream(websocket: WebSocket) -> None:
                     camera_id=feedback_camera_id,
                     observed_ts=float(payload.timestamp),
                 )
+                if pg_logger is not None:
+                    pg_logger.ingest_alerts(
+                        alerts=active_alert_dicts,
+                        camera_id=feedback_camera_id,
+                    )
             if include_stream_jpeg:
                 await websocket.send_bytes(jpeg)
             await websocket.send_json(payload.model_dump())
