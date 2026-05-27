@@ -337,7 +337,7 @@ async def ws_stream(websocket: WebSocket) -> None:
                     acknowledged = feedback_store.is_acknowledged(alert.alert_id)
                     alert.acknowledged = acknowledged
                     alert.feedback_label = feedback_store.feedback_label(alert.alert_id)
-                active_alert_dicts.append(alert.model_dump())
+                active_alert_dicts.append(alert.model_dump(mode="json"))
             feedback_camera_id = (
                 str(getattr(app.state, "deepstream_camera_id", "cam_01"))
                 if backend == "deepstream"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 
+from app.schemas import AlertStatus
 from app.violation_ingest import ViolationAlertFilter
 
 
@@ -98,3 +99,18 @@ def test_ttl_allows_new_after_expiry() -> None:
     assert len(filt.filter(alerts=[alert], camera_id="cam_01")) == 0
     time.sleep(0.25)
     assert len(filt.filter(alerts=[alert], camera_id="cam_01")) == 1
+
+
+def test_enum_status_active_is_accepted() -> None:
+    filt = ViolationAlertFilter(config=_base_config())
+    alert = {
+        "alert_id": "a5",
+        "person_id": 4,
+        "display_id": "ID_4-cam_01",
+        "item": "helmet",
+        "status": AlertStatus.ACTIVE,
+        "reason": "helmet_missing",
+        "negative_conf": 0.91,
+    }
+    rows = filt.filter(alerts=[alert], camera_id="cam_01")
+    assert len(rows) == 1

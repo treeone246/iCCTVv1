@@ -19,6 +19,18 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(default)
 
 
+def _to_status_upper(value: Any, default: str = "ACTIVE") -> str:
+    if value is None:
+        return str(default).strip().upper()
+    enum_value = getattr(value, "value", None)
+    if enum_value is not None:
+        return str(enum_value).strip().upper()
+    raw = str(value).strip()
+    if "." in raw:
+        raw = raw.split(".")[-1]
+    return raw.upper()
+
+
 class ViolationAlertFilter:
     """Suppress noisy repeated alerts before they reach durable storage."""
 
@@ -42,7 +54,7 @@ class ViolationAlertFilter:
 
     def _key(self, *, camera_id: str, alert: dict[str, Any]) -> str:
         item = str(alert.get("item", "unknown")).strip().lower()
-        status = str(alert.get("status", "ACTIVE")).strip().upper()
+        status = _to_status_upper(alert.get("status", "ACTIVE"))
         display_id = str(alert.get("display_id", "")).strip()
         person_id = int(alert.get("person_id", -1))
         who = display_id if display_id else f"person_{person_id}"
@@ -79,7 +91,7 @@ class ViolationAlertFilter:
         for raw in alerts:
             self._stats["seen"] += 1
             alert = dict(raw)
-            status = str(alert.get("status", "ACTIVE")).strip().upper()
+            status = _to_status_upper(alert.get("status", "ACTIVE"))
             if self.only_active and status != "ACTIVE":
                 self._stats["suppressed_non_active"] += 1
                 continue
