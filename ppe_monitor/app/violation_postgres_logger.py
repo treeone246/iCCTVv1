@@ -38,19 +38,32 @@ class ViolationPostgresLogger:
         self._port = int(pg_cfg.get("port", 5432))
         self._database = str(pg_cfg.get("database", "ppe_monitor"))
         self._user = str(pg_cfg.get("user", "ppe_app"))
-        self._password = str(pg_cfg.get("password", os.getenv("PPE_MONITOR_PG_PASSWORD", os.getenv("PGPASSWORD", ""))))
-        self._dsn = str(
-            pg_cfg.get(
-                "dsn",
-                (
-                    f"host={self._host} "
-                    f"port={self._port} "
-                    f"dbname={self._database} "
-                    f"user={self._user} "
-                    f"password={self._password}"
-                ),
-            )
-        ).strip()
+        config_password = str(pg_cfg.get("password", "")).strip()
+        env_password_ppe = str(os.getenv("PPE_MONITOR_PG_PASSWORD", "")).strip()
+        env_password_pg = str(os.getenv("PGPASSWORD", "")).strip()
+        self._password_source = "none"
+        if config_password:
+            self._password = config_password
+            self._password_source = "config"
+        elif env_password_ppe:
+            self._password = env_password_ppe
+            self._password_source = "PPE_MONITOR_PG_PASSWORD"
+        elif env_password_pg:
+            self._password = env_password_pg
+            self._password_source = "PGPASSWORD"
+        else:
+            self._password = ""
+
+        dsn_parts = [
+            f"host={self._host}",
+            f"port={self._port}",
+            f"dbname={self._database}",
+            f"user={self._user}",
+        ]
+        if self._password:
+            dsn_parts.append(f"password={self._password}")
+        default_dsn = " ".join(dsn_parts)
+        self._dsn = str(pg_cfg.get("dsn", default_dsn)).strip()
         self._conn = None
         self._init_error: str | None = None
         self._last_error: str | None = None
@@ -183,7 +196,8 @@ class ViolationPostgresLogger:
             conn = self._connect()
         except Exception as exc:
             self._init_error = f"db_connect_error:{type(exc).__name__}"
-            self._last_error = self._init_error
+            if not self._last_error:
+                self._last_error = self._init_error
             now_ts = time.time()
             if now_ts - self._last_connect_log_ts >= self._connect_retry_backoff_seconds:
                 print(
@@ -324,6 +338,7 @@ class ViolationPostgresLogger:
             "db_name": self._database,
             "db_user": self._user,
             "db_password_set": bool(self._password),
+            "db_password_source": self._password_source,
             "connect_retry_backoff_seconds": float(self._connect_retry_backoff_seconds),
             "next_connect_attempt_ts": float(self._next_connect_attempt_ts),
         }
