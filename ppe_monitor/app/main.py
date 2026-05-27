@@ -323,28 +323,29 @@ async def ws_stream(websocket: WebSocket) -> None:
             )
             feedback_store = getattr(app.state, "alert_feedback_store", None)
             pg_logger = getattr(app.state, "violation_pg_logger", None)
-            if feedback_store is not None:
-                active_alert_dicts: list[dict] = []
-                for alert in payload.active_alerts:
+            active_alert_dicts: list[dict] = []
+            for alert in payload.active_alerts:
+                if feedback_store is not None:
                     acknowledged = feedback_store.is_acknowledged(alert.alert_id)
                     alert.acknowledged = acknowledged
                     alert.feedback_label = feedback_store.feedback_label(alert.alert_id)
-                    active_alert_dicts.append(alert.model_dump())
-                feedback_camera_id = (
-                    str(getattr(app.state, "deepstream_camera_id", "cam_01"))
-                    if backend == "deepstream"
-                    else str(getattr(app.state, "alert_feedback_camera_id", "cam_01"))
-                )
+                active_alert_dicts.append(alert.model_dump())
+            feedback_camera_id = (
+                str(getattr(app.state, "deepstream_camera_id", "cam_01"))
+                if backend == "deepstream"
+                else str(getattr(app.state, "alert_feedback_camera_id", "cam_01"))
+            )
+            if feedback_store is not None:
                 feedback_store.observe_active_alerts(
                     alerts=active_alert_dicts,
                     camera_id=feedback_camera_id,
                     observed_ts=float(payload.timestamp),
                 )
-                if pg_logger is not None:
-                    pg_logger.ingest_alerts(
-                        alerts=active_alert_dicts,
-                        camera_id=feedback_camera_id,
-                    )
+            if pg_logger is not None:
+                pg_logger.ingest_alerts(
+                    alerts=active_alert_dicts,
+                    camera_id=feedback_camera_id,
+                )
             if include_stream_jpeg:
                 await websocket.send_bytes(jpeg)
             await websocket.send_json(payload.model_dump())
@@ -457,6 +458,14 @@ async def alert_feedback_stats() -> dict:
     if store is None:
         return {"enabled": False, "error": "alert_feedback_store_not_initialized"}
     return store.stats()
+
+
+@app.get("/api/postgres-logging/status")
+async def postgres_logging_status() -> dict:
+    logger = getattr(app.state, "violation_pg_logger", None)
+    if logger is None:
+        return {"enabled": False, "error": "violation_pg_logger_not_initialized"}
+    return logger.status()
 
 
 @app.get("/metrics")

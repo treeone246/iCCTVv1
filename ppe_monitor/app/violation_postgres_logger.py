@@ -34,20 +34,31 @@ class ViolationPostgresLogger:
         self._seen: set[str] = set()
         self._seen_queue: Deque[str] = deque()
         self._lock = threading.Lock()
+        self._host = str(pg_cfg.get("host", "127.0.0.1"))
+        self._port = int(pg_cfg.get("port", 5432))
+        self._database = str(pg_cfg.get("database", "ppe_monitor"))
+        self._user = str(pg_cfg.get("user", "ppe_app"))
+        self._password = str(pg_cfg.get("password", os.getenv("PPE_MONITOR_PG_PASSWORD", os.getenv("PGPASSWORD", ""))))
         self._dsn = str(
             pg_cfg.get(
                 "dsn",
                 (
-                    f"host={pg_cfg.get('host', '127.0.0.1')} "
-                    f"port={int(pg_cfg.get('port', 5432))} "
-                    f"dbname={pg_cfg.get('database', 'ppe_monitor')} "
-                    f"user={pg_cfg.get('user', 'ppe_app')} "
-                    f"password={pg_cfg.get('password', os.getenv('PPE_MONITOR_PG_PASSWORD', ''))}"
+                    f"host={self._host} "
+                    f"port={self._port} "
+                    f"dbname={self._database} "
+                    f"user={self._user} "
+                    f"password={self._password}"
                 ),
             )
         ).strip()
         self._conn = None
         self._init_error: str | None = None
+        self._last_error: str | None = None
+        self._last_insert_ts: float = 0.0
+        self._inserted_count: int = 0
+        self._duplicate_count: int = 0
+        self._ingest_batches: int = 0
+        self._connect_fail_count: int = 0
         if self.enabled and psycopg is None:
             self._init_error = "psycopg_not_installed"
             self.enabled = False
@@ -63,8 +74,15 @@ class ViolationPostgresLogger:
             return None
         if self._conn is not None:
             return self._conn
-        self._conn = psycopg.connect(self._dsn, autocommit=True)
-        self._ensure_schema(self._conn)
+        try:
+            self._conn = psycopg.connect(self._dsn, autocommit=True, connect_timeout=3)
+            self._ensure_schema(self._conn)
+            self._init_error = None
+            self._last_error = None
+        except Exception as exc:
+            self._connect_fail_count += 1
+            self._last_error = f"db_connect_error:{type(exc).__name__}:{str(exc)}"
+            raise
         return self._conn
 
     def _ensure_schema(self, conn) -> None:
@@ -150,12 +168,22 @@ class ViolationPostgresLogger:
     ) -> None:
         if not self.enabled:
             return
+        self._ingest_batches += 1
         cam = str(camera_id or self.default_camera_id)
         conn = None
         try:
             conn = self._connect()
         except Exception as exc:
             self._init_error = f"db_connect_error:{type(exc).__name__}"
+            self._last_error = self._init_error
+            print(
+                json.dumps(
+                    {
+                        "event_type": "postgres_violation_connect_error",
+                        "error": self._init_error,
+                    }
+                )
+            )
             self.close()
             return
         if conn is None:
@@ -167,6 +195,7 @@ class ViolationPostgresLogger:
                 if not alert_id:
                     continue
                 if not self._mark_seen(alert_id):
+                    self._duplicate_count += 1
                     continue
                 person_id = int(alert.get("person_id", -1))
                 person_display_id = str(alert.get("display_id", ""))
@@ -251,14 +280,37 @@ class ViolationPostgresLogger:
                             "reason": reason,
                         },
                     )
+                self._inserted_count += 1
+                self._last_insert_ts = time.time()
             except Exception as exc:
                 # Fail-soft: do not break realtime stream on DB/file issues.
+                self._last_error = f"insert_error:{type(exc).__name__}"
                 print(
                     json.dumps(
                         {
                             "event_type": "postgres_violation_log_error",
-                            "error": f"{type(exc).__name__}",
+                            "error": self._last_error,
                         }
                     )
                 )
                 continue
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "init_error": self._init_error,
+            "last_error": self._last_error,
+            "inserted_count": int(self._inserted_count),
+            "duplicate_count": int(self._duplicate_count),
+            "ingest_batches": int(self._ingest_batches),
+            "connect_fail_count": int(self._connect_fail_count),
+            "last_insert_ts": float(self._last_insert_ts),
+            "local_roi_dir": str(self.local_roi_dir),
+            "device_id": str(self.device_id),
+            "camera_id": str(self.default_camera_id),
+            "db_host": self._host,
+            "db_port": self._port,
+            "db_name": self._database,
+            "db_user": self._user,
+            "db_password_set": bool(self._password),
+        }
