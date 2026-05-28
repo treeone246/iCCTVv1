@@ -247,14 +247,9 @@ async def health() -> dict:
 @app.websocket("/ws/stream")
 async def ws_stream(websocket: WebSocket) -> None:
     if bool(getattr(app.state, "api_only_mode", False)):
-        await websocket.accept()
-        await websocket.send_json(
-            {
-                "event_type": "stream_disabled",
-                "reason": "api_only_mode_enabled",
-            }
-        )
-        await websocket.close(code=1013, reason="stream_disabled")
+        # Close before accept => Starlette returns HTTP 403 on WS handshake.
+        # This avoids unnecessary WS open/close churn when UI keeps retrying stream.
+        await websocket.close(code=1008, reason="api_only_mode_enabled")
         return
 
     gate = getattr(app.state, "stream_gate", None)
