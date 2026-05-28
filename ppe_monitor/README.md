@@ -939,3 +939,261 @@ Fixes:
 - Verify custom parser library path and function names in DeepStream config.
 - Rebuild engine/config pair on the same target runtime.
 
+## 13. Deployment guide (local, LAN, public, NUC Kafka/Flink)
+
+This section explains how to run and publish the backend/database for:
+- local-only development,
+- LAN/intranet operations,
+- public internet access (hardened),
+- split architecture with Jetson inference + NUC stream processing.
+
+### 13.1 Deployment modes at a glance
+
+| Mode | FastAPI | PostgreSQL | Kafka/Flink | Recommended use |
+|---|---|---|---|---|
+| Local-only | Jetson/Laptop | Same host | Disabled | Dev/testing |
+| LAN | Jetson | Jetson or LAN DB host | Optional | Plant/site network |
+| Public | Jetson behind reverse proxy | Private only | Optional | Remote monitoring |
+| Jetson + NUC | Jetson | Jetson or central DB | Kafka/Flink on NUC | Production scaling |
+
+### 13.2 Local backend + PostgreSQL (single host)
+
+1. Start PostgreSQL:
+
+```bash
+sudo systemctl start postgresql
+sudo systemctl status postgresql --no-pager
+```
+
+2. Ensure DB and role exist:
+
+```bash
+sudo -u postgres psql <<'SQL'
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'ppe_app') THEN
+    CREATE ROLE ppe_app LOGIN PASSWORD 'sepeed246';
+  END IF;
+END
+$$;
+SQL
+
+sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='ppe_monitor'" | grep -q 1 \
+  || sudo -u postgres createdb -O ppe_app ppe_monitor
+```
+
+3. Create/ensure core `violation_logs` table:
+
+```bash
+psql -h 127.0.0.1 -U ppe_app -d ppe_monitor <<'SQL'
+CREATE TABLE IF NOT EXISTS violation_logs (
+  violation_id UUID PRIMARY KEY,
+  event_time TIMESTAMPTZ NOT NULL,
+  device_id TEXT NOT NULL,
+  camera_id TEXT NOT NULL,
+  person_display_id TEXT,
+  ppe_item TEXT NOT NULL,
+  status TEXT NOT NULL,
+  confidence NUMERIC,
+  local_roi_path TEXT,
+  roi_exists BOOLEAN DEFAULT TRUE,
+  reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_violation_time ON violation_logs(event_time DESC);
+CREATE INDEX IF NOT EXISTS idx_violation_camera_time ON violation_logs(camera_id, event_time DESC);
+SQL
+```
+
+4. Start backend:
+
+```bash
+cd ppe_monitor
+export PPE_MONITOR_PG_PASSWORD='sepeed246'
+uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+5. Validate:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+curl -s http://127.0.0.1:8000/api/violation-ingest/status
+curl -s http://127.0.0.1:8000/api/postgres-logging/status
+```
+
+### 13.3 Publish backend and DB on LAN (local server/intranet)
+
+1. Run FastAPI on all interfaces:
+
+```bash
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+2. Configure PostgreSQL to listen on LAN:
+
+`/etc/postgresql/14/main/postgresql.conf`
+
+```conf
+listen_addresses = '*'
+```
+
+`/etc/postgresql/14/main/pg_hba.conf`
+
+```conf
+host    ppe_monitor    ppe_app    10.61.1.0/24    scram-sha-256
+```
+
+3. Restart PostgreSQL:
+
+```bash
+sudo systemctl restart postgresql
+ss -ltnp | grep 5432
+```
+
+4. Verify from another machine:
+
+```bash
+psql -h <JETSON_IP> -U ppe_app -d ppe_monitor -c "SELECT now();"
+```
+
+5. Grafana embed should use LAN IP, not localhost:
+
+```text
+http://<JETSON_IP>:3000/d-solo/<uid>/<slug>?orgId=1&panelId=1&from=now-6h&to=now
+```
+
+### 13.4 Publish publicly (internet) safely
+
+Do not expose PostgreSQL (`5432`) directly to the public internet.
+
+Recommended pattern:
+- expose only HTTPS reverse proxy (`443`) to FastAPI/Grafana,
+- keep PostgreSQL private (localhost/VPN/private subnet),
+- add authentication + TLS + IP restrictions.
+
+Minimum architecture:
+1. `uvicorn` bound to localhost or private interface.
+2. Nginx/Caddy reverse proxy on `443`.
+3. TLS certificate (Let's Encrypt or managed cert).
+4. Optional VPN/Tunnel (WireGuard/Tailscale/Cloudflare Tunnel) for admin access.
+
+Example Nginx upstream (concept):
+
+```nginx
+server {
+  listen 443 ssl;
+  server_name ppe.example.com;
+
+  # ssl_certificate ...;
+  # ssl_certificate_key ...;
+
+  location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+}
+```
+
+### 13.5 NUC side setup for Kafka-enabled feature
+
+Use this when Jetson handles inference and NUC handles stream processing.
+
+#### A) Start Kafka/Flink stack on NUC
+
+```bash
+cd ppe_monitor
+docker compose -f docker-compose.flink.yml up -d
+docker ps
+```
+
+This compose launches:
+- Kafka broker,
+- Flink JobManager,
+- Flink TaskManager.
+
+#### B) Configure Jetson to publish to Kafka
+
+In `config.yaml` on Jetson:
+
+```yaml
+violation_ingest:
+  mode: "kafka_flink"
+  kafka:
+    enabled: true
+    bootstrap_servers: "<NUC_IP>:9092"
+    topic: "ppe.violations.raw"
+    also_write_local: false
+```
+
+Restart backend on Jetson:
+
+```bash
+export PPE_MONITOR_PG_PASSWORD='sepeed246'
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+#### C) Run Flink job to sink curated events into PostgreSQL
+
+1. Ensure sink table exists:
+
+```bash
+psql -h <DB_HOST> -U ppe_app -d ppe_monitor -f scripts/sql/create_violation_logs_flink.sql
+```
+
+2. Install optional stream dependencies on NUC:
+
+```bash
+pip install -r requirements-kafka-spark.txt
+```
+
+3. Start Flink job script:
+
+```bash
+python scripts/flink_violation_stream.py \
+  --config config.yaml \
+  --bootstrap-servers <NUC_IP>:9092 \
+  --postgres-host <DB_HOST> \
+  --postgres-db ppe_monitor \
+  --postgres-user ppe_app \
+  --postgres-password 'sepeed246' \
+  --pipeline-jars "file:///opt/flink/lib/flink-sql-connector-kafka.jar;file:///opt/flink/lib/flink-connector-jdbc.jar;file:///opt/flink/lib/postgresql.jar"
+```
+
+Notes:
+- Connector JAR versions must match your Flink version.
+- Keep `topic` and `group_id` consistent across config and jobs.
+
+### 13.6 End-to-end validation checklist
+
+1. Jetson backend healthy:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+2. Ingest pipeline active:
+
+```bash
+curl -s http://127.0.0.1:8000/api/violation-ingest/status
+```
+
+3. PostgreSQL writes increasing (direct mode):
+
+```bash
+curl -s http://127.0.0.1:8000/api/postgres-logging/status
+```
+
+4. DB rows present:
+
+```bash
+psql -h <DB_HOST> -U ppe_app -d ppe_monitor -c \
+"SELECT ppe_item, COUNT(*) FROM violation_logs GROUP BY 1 ORDER BY 2 DESC;"
+```
+
+5. Kafka mode checks:
+- Jetson status shows Kafka publish counters increasing.
+- Flink job running in JobManager UI (`http://<NUC_IP>:8081`).
+- Curated sink table row count increasing.
+
