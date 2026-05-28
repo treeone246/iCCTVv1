@@ -2,13 +2,17 @@
 
 import asyncio
 import json
+import mimetypes
+import os
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Response, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .alert_feedback import AlertFeedbackStore
@@ -29,6 +33,11 @@ from .stream_guard import StreamClientGate
 from .violation_ingest import ViolationIngestManager
 from .violation_postgres_logger import ViolationPostgresLogger
 from .video_source import VideoSource
+
+try:
+    import psycopg  # type: ignore
+except Exception:  # pragma: no cover - optional runtime dependency
+    psycopg = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -493,6 +502,55 @@ async def violation_ingest_status() -> dict:
     return manager.status()
 
 
+@app.get("/api/violations/{violation_id}/roi")
+async def violation_roi_image(
+    violation_id: str,
+    download: bool = Query(False, description="When true, force attachment download."),
+) -> FileResponse:
+    """Serve ROI image for a violation record by UUID.
+
+    UI should use violation_id from DB/API metadata and fetch image via GET.
+    """
+    try:
+        violation_uuid = str(uuid.UUID(str(violation_id)))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid_violation_id") from exc
+
+    if psycopg is None:
+        raise HTTPException(status_code=503, detail="psycopg_not_installed")
+
+    config = getattr(app.state, "config", load_config())
+    dsn = _build_postgres_dsn(config)
+    try:
+        record = await asyncio.to_thread(_fetch_violation_roi_record, dsn, violation_uuid)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"roi_lookup_failed:{type(exc).__name__}") from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="violation_not_found")
+
+    roi_raw = str(record.get("local_roi_path") or "").strip()
+    if not roi_raw:
+        raise HTTPException(status_code=404, detail="roi_not_available")
+
+    resolved_path = _resolve_roi_file_path(config=config, local_roi_path=roi_raw)
+    if resolved_path is None:
+        raise HTTPException(status_code=403, detail="roi_path_outside_allowed_directory")
+    if not resolved_path.exists() or not resolved_path.is_file():
+        raise HTTPException(status_code=404, detail="roi_file_missing")
+
+    media_type = mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream"
+    filename = (
+        f"{record.get('camera_id', 'cam')}_{record.get('ppe_item', 'ppe')}_{violation_uuid}{resolved_path.suffix}"
+    )
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        path=str(resolved_path),
+        media_type=media_type,
+        filename=filename,
+        content_disposition_type=disposition,
+    )
+
+
 @app.get("/metrics")
 async def metrics() -> Response:
     exporter = getattr(app.state, "metrics_exporter", None)
@@ -525,6 +583,80 @@ def _resolve_project_path(value: str) -> Path:
     if path.is_absolute():
         return path
     return (PROJECT_ROOT / path).resolve()
+
+
+def _build_postgres_dsn(config: dict) -> str:
+    pg_cfg = config.get("postgres_logging", {}) or {}
+    dsn_from_config = str(pg_cfg.get("dsn", "")).strip()
+    if dsn_from_config:
+        return dsn_from_config
+
+    host = str(pg_cfg.get("host", "127.0.0.1")).strip()
+    port = int(pg_cfg.get("port", 5432))
+    database = str(pg_cfg.get("database", "ppe_monitor")).strip()
+    user = str(pg_cfg.get("user", "ppe_app")).strip()
+    password_cfg = str(pg_cfg.get("password", "")).strip()
+    password_env = str(os.getenv("PPE_MONITOR_PG_PASSWORD", "")).strip()
+    password_pg = str(os.getenv("PGPASSWORD", "")).strip()
+    password = password_cfg or password_env or password_pg
+
+    parts = [
+        f"host={host}",
+        f"port={port}",
+        f"dbname={database}",
+        f"user={user}",
+    ]
+    if password:
+        parts.append(f"password={password}")
+    return " ".join(parts)
+
+
+def _fetch_violation_roi_record(dsn: str, violation_id: str) -> dict[str, Any] | None:
+    query = """
+    SELECT
+      violation_id::text,
+      camera_id,
+      ppe_item,
+      local_roi_path
+    FROM violation_logs
+    WHERE violation_id = %s
+    LIMIT 1
+    """
+    with psycopg.connect(dsn, connect_timeout=3) as conn:  # type: ignore[arg-type]
+        with conn.cursor() as cur:
+            cur.execute(query, (str(violation_id),))
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "violation_id": str(row[0]),
+        "camera_id": str(row[1]),
+        "ppe_item": str(row[2]),
+        "local_roi_path": str(row[3]) if row[3] is not None else "",
+    }
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(parent.resolve())
+    except Exception:
+        try:
+            path.resolve().relative_to(parent.resolve())
+            return True
+        except Exception:
+            return False
+
+
+def _resolve_roi_file_path(*, config: dict, local_roi_path: str) -> Path | None:
+    raw = Path(str(local_roi_path))
+    resolved = raw if raw.is_absolute() else (PROJECT_ROOT / raw)
+    resolved = resolved.resolve()
+
+    pg_cfg = config.get("postgres_logging", {}) or {}
+    allowed_dir = _resolve_project_path(str(pg_cfg.get("local_roi_dir", "outputs/violation_roi"))).resolve()
+    if not _is_relative_to(resolved, allowed_dir):
+        return None
+    return resolved
 
 
 app.mount("/", StaticFiles(directory=str(PROJECT_ROOT / "static"), html=True), name="static")
