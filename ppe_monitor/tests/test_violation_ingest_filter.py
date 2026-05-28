@@ -10,6 +10,14 @@ from app.violation_ingest import ViolationAlertFilter
 
 def _base_config() -> dict:
     return {
+        "verifier": {
+            "label_polarity": {
+                "helmet": {"positive": ["helmet"], "negative": []},
+                "goggles": {"positive": ["goggles"], "negative": []},
+                "gloves": {"positive": ["gloves"], "negative": ["no_gloves"]},
+                "boots": {"positive": ["boots"], "negative": ["no_boots"]},
+            }
+        },
         "violation_ingest": {
             "enabled": True,
             "filter": {
@@ -22,7 +30,10 @@ def _base_config() -> dict:
                 "min_negative_confidence_per_item": {
                     "helmet": 0.35,
                     "gloves": 0.2,
+                    "boots": 0.2,
                 },
+                "enforce_negative_conf_items": [],
+                "bypass_low_conf_items": ["goggles", "gloves"],
                 "allow_reason_change_bypass": True,
             },
         }
@@ -48,16 +59,16 @@ def test_repeat_alert_is_suppressed() -> None:
 
 def test_low_confidence_alert_is_suppressed() -> None:
     filt = ViolationAlertFilter(config=_base_config())
-    low_conf_gloves = {
+    low_conf_boots = {
         "alert_id": "a2",
         "person_id": 1,
         "display_id": "ID_1-cam_01",
-        "item": "gloves",
+        "item": "boots",
         "status": "ACTIVE",
-        "reason": "low_conf_gloves",
+        "reason": "low_conf_boots",
         "negative_conf": 0.05,
     }
-    rows = filt.filter(alerts=[low_conf_gloves], camera_id="cam_01")
+    rows = filt.filter(alerts=[low_conf_boots], camera_id="cam_01")
     assert rows == []
 
 
@@ -111,6 +122,36 @@ def test_enum_status_active_is_accepted() -> None:
         "status": AlertStatus.ACTIVE,
         "reason": "helmet_missing",
         "negative_conf": 0.91,
+    }
+    rows = filt.filter(alerts=[alert], camera_id="cam_01")
+    assert len(rows) == 1
+
+
+def test_goggles_low_negative_conf_not_suppressed() -> None:
+    filt = ViolationAlertFilter(config=_base_config())
+    alert = {
+        "alert_id": "a6",
+        "person_id": 6,
+        "display_id": "ID_6-cam_01",
+        "item": "goggles",
+        "status": "ACTIVE",
+        "reason": "direct_violation",
+        "negative_conf": 0.0,
+    }
+    rows = filt.filter(alerts=[alert], camera_id="cam_01")
+    assert len(rows) == 1
+
+
+def test_gloves_low_negative_conf_not_suppressed_with_bypass() -> None:
+    filt = ViolationAlertFilter(config=_base_config())
+    alert = {
+        "alert_id": "a7",
+        "person_id": 7,
+        "display_id": "ID_7-cam_01",
+        "item": "gloves",
+        "status": "ACTIVE",
+        "reason": "verifier_ollama_violation",
+        "negative_conf": 0.01,
     }
     rows = filt.filter(alerts=[alert], camera_id="cam_01")
     assert len(rows) == 1

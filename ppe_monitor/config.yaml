@@ -309,9 +309,13 @@ violation_ingest:
     min_negative_confidence_per_item:
       helmet: 0.00
       coverall: 0.00
-      goggles: 0.20
-      gloves: 0.20
+      goggles: 0.00
+      gloves: 0.00
       boots: 0.20
+    # Optional explicit list. Empty means auto-derive from verifier.label_polarity negative labels.
+    enforce_negative_conf_items: []
+    # Do not block these PPE items on low negative_conf before DB write.
+    bypass_low_conf_items: [goggles, gloves]
     # If reason changes materially, allow one bypass of repeat suppression.
     allow_reason_change_bypass: true
   queue:

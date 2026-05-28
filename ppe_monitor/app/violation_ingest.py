@@ -37,6 +37,8 @@ class ViolationAlertFilter:
     def __init__(self, *, config: dict) -> None:
         ingest_cfg = config.get("violation_ingest", {}) or {}
         filter_cfg = ingest_cfg.get("filter", {}) or {}
+        verifier_cfg = config.get("verifier", {}) or {}
+        polarity_cfg = verifier_cfg.get("label_polarity", {}) or {}
         self.enabled = bool(ingest_cfg.get("enabled", True)) and bool(filter_cfg.get("enabled", True))
         self.only_active = bool(filter_cfg.get("only_active", True))
         self.repeat_suppression_seconds = max(0.0, float(filter_cfg.get("repeat_suppression_seconds", 60.0)))
@@ -45,6 +47,19 @@ class ViolationAlertFilter:
         self.default_min_negative_conf = float(filter_cfg.get("min_negative_confidence_default", 0.0))
         per_item_cfg = filter_cfg.get("min_negative_confidence_per_item", {}) or {}
         self.min_negative_conf_per_item = {str(k).lower(): float(v) for k, v in per_item_cfg.items()}
+        enforce_items = set(str(x).lower() for x in filter_cfg.get("enforce_negative_conf_items", []))
+        if not enforce_items:
+            # Auto-derive from verifier label polarity:
+            # only items with explicit negative classes should use negative_conf gating.
+            for item, spec in polarity_cfg.items():
+                neg_labels = spec.get("negative", []) if isinstance(spec, dict) else []
+                if neg_labels:
+                    enforce_items.add(str(item).lower())
+        self.enforce_negative_conf_items = enforce_items
+        # For these items, keep DB logging enabled even when negative_conf is weak.
+        self.bypass_low_conf_items = set(
+            str(x).lower() for x in filter_cfg.get("bypass_low_conf_items", ["goggles", "gloves"])
+        )
         self.allow_reason_change_bypass = bool(filter_cfg.get("allow_reason_change_bypass", True))
         self._last_emit_by_key: dict[str, float] = {}
         self._last_reason_by_key: dict[str, str] = {}
@@ -100,8 +115,12 @@ class ViolationAlertFilter:
             has_negative_conf = raw_negative_conf is not None
             negative_conf = _to_float(raw_negative_conf, 0.0)
             min_neg_conf = self._min_neg_conf_for_item(item)
-            # If negative confidence is absent from upstream payload, do not suppress only on confidence gate.
-            if has_negative_conf and negative_conf < min_neg_conf:
+            apply_low_conf_gate = (
+                item in self.enforce_negative_conf_items
+                and item not in self.bypass_low_conf_items
+            )
+            # If negative confidence is absent from upstream payload, do not suppress on this gate.
+            if apply_low_conf_gate and has_negative_conf and negative_conf < min_neg_conf:
                 self._stats["suppressed_low_conf"] += 1
                 continue
 
@@ -143,6 +162,8 @@ class ViolationAlertFilter:
             "max_events_per_minute_per_key": int(self.max_events_per_minute_per_key),
             "default_min_negative_conf": float(self.default_min_negative_conf),
             "min_negative_conf_per_item": dict(self.min_negative_conf_per_item),
+            "enforce_negative_conf_items": sorted(self.enforce_negative_conf_items),
+            "bypass_low_conf_items": sorted(self.bypass_low_conf_items),
             "seen_keys": int(len(self._last_emit_by_key)),
             "stats": {k: int(v) for k, v in self._stats.items()},
         }
