@@ -8,6 +8,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import yaml
@@ -49,6 +50,17 @@ def load_config() -> dict:
         return yaml.safe_load(f)
 
 
+def _is_api_only_mode(config: dict) -> bool:
+    """Return True when running API endpoints without CV pipeline startup."""
+    env_raw = str(os.getenv("PPE_MONITOR_API_ONLY", "")).strip().lower()
+    if env_raw in {"1", "true", "yes", "on"}:
+        return True
+    if env_raw in {"0", "false", "no", "off"}:
+        return False
+    service_cfg = config.get("service", {}) or {}
+    return bool(service_cfg.get("api_only", False))
+
+
 def _parse_bool_query(value: str | None) -> bool | None:
     """Parse bool-like websocket query values.
 
@@ -69,77 +81,84 @@ def _parse_bool_query(value: str | None) -> bool | None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config = load_config()
-    backend = get_runtime_backend(config)
-    runtime = load_runtime_components(config, PROJECT_ROOT, skip_ppe=(backend == "deepstream"))
+    api_only_mode = _is_api_only_mode(config)
+    backend = "api_only" if api_only_mode else get_runtime_backend(config)
+    runtime = SimpleNamespace(provider_info={})
     behavior_service = None
-
-    pipeline = MonitoringPipeline(
-        pose_tracker=runtime.pose_tracker,
-        ppe_detector=runtime.ppe_detector,
-        verifier=runtime.verifier,
-        config=config,
-    )
+    pipeline: MonitoringPipeline | None = None
     video_source = None
     deepstream_runner = None
     deepstream_emit_jpeg = True
     deepstream_source_id = 0
     deepstream_camera_id = str(config.get("deepstream", {}).get("camera_id", "rig_floor_cam_01"))
 
-    if backend == "deepstream":
-        ds_settings = build_deepstream_settings(config, project_root=PROJECT_ROOT)
-        if not ds_settings.enabled:
-            raise RuntimeError(
-                "runtime.backend is 'deepstream' but deepstream.enabled is false. "
-                "Set deepstream.enabled: true in config.yaml."
-            )
-        alias_map = build_alias_index(config.get("ppe_label_aliases", {}))
-        ds_cfg = config.get("deepstream", {}) or {}
-        person_classes = set(str(x) for x in ds_cfg.get("person_classes", ["person"]))
-        ppe_classes = set(str(x) for x in config.get("required_ppe", []))
-        ppe_classes.update({"no_gloves", "no_boots", "harness"})
-        deepstream_runner = DeepStreamPipelineRunner(
-            settings=ds_settings,
-            label_map=ds_cfg.get("label_map", {}),
-            person_classes=person_classes,
-            ppe_classes=ppe_classes,
-            alias_to_canonical=alias_map,
+    if not api_only_mode:
+        runtime = load_runtime_components(config, PROJECT_ROOT, skip_ppe=(backend == "deepstream"))
+        pipeline = MonitoringPipeline(
+            pose_tracker=runtime.pose_tracker,
+            ppe_detector=runtime.ppe_detector,
+            verifier=runtime.verifier,
+            config=config,
         )
-        deepstream_runner.start()
-        deepstream_emit_jpeg = bool(ds_settings.emit_jpeg)
-        source_cfg = {"source_uris": ds_settings.source_uris, "target_fps": ds_settings.target_fps}
-        print(
-            json.dumps(
-                {
-                    "event_type": "video_source_config",
-                    "backend": backend,
-                    "source_count": len(ds_settings.source_uris),
-                    "source_uris": ds_settings.source_uris,
-                    "camera_ids": ds_settings.camera_ids,
-                    "target_fps": source_cfg["target_fps"],
-                }
+
+        if backend == "deepstream":
+            ds_settings = build_deepstream_settings(config, project_root=PROJECT_ROOT)
+            if not ds_settings.enabled:
+                raise RuntimeError(
+                    "runtime.backend is 'deepstream' but deepstream.enabled is false. "
+                    "Set deepstream.enabled: true in config.yaml."
+                )
+            alias_map = build_alias_index(config.get("ppe_label_aliases", {}))
+            ds_cfg = config.get("deepstream", {}) or {}
+            person_classes = set(str(x) for x in ds_cfg.get("person_classes", ["person"]))
+            ppe_classes = set(str(x) for x in config.get("required_ppe", []))
+            ppe_classes.update({"no_gloves", "no_boots", "harness"})
+            deepstream_runner = DeepStreamPipelineRunner(
+                settings=ds_settings,
+                label_map=ds_cfg.get("label_map", {}),
+                person_classes=person_classes,
+                ppe_classes=ppe_classes,
+                alias_to_canonical=alias_map,
             )
-        )
+            deepstream_runner.start()
+            deepstream_emit_jpeg = bool(ds_settings.emit_jpeg)
+            source_cfg = {"source_uris": ds_settings.source_uris, "target_fps": ds_settings.target_fps}
+            print(
+                json.dumps(
+                    {
+                        "event_type": "video_source_config",
+                        "backend": backend,
+                        "source_count": len(ds_settings.source_uris),
+                        "source_uris": ds_settings.source_uris,
+                        "camera_ids": ds_settings.camera_ids,
+                        "target_fps": source_cfg["target_fps"],
+                    }
+                )
+            )
+        else:
+            source_cfg = config["video"]
+            print(
+                json.dumps(
+                    {
+                        "event_type": "video_source_config",
+                        "backend": backend,
+                        "source": source_cfg["source"],
+                        "source_type": type(source_cfg["source"]).__name__,
+                        "target_fps": source_cfg["target_fps"],
+                    }
+                )
+            )
+            video_source = VideoSource(
+                source=source_cfg["source"],
+                target_fps=float(source_cfg["target_fps"]),
+                drop_grab_limit=int(source_cfg.get("drop_grab_limit", 3)),
+            )
+            video_source.open()
     else:
-        source_cfg = config["video"]
-        print(
-            json.dumps(
-                {
-                    "event_type": "video_source_config",
-                    "backend": backend,
-                    "source": source_cfg["source"],
-                    "source_type": type(source_cfg["source"]).__name__,
-                    "target_fps": source_cfg["target_fps"],
-                }
-            )
-        )
-        video_source = VideoSource(
-            source=source_cfg["source"],
-            target_fps=float(source_cfg["target_fps"]),
-            drop_grab_limit=int(source_cfg.get("drop_grab_limit", 3)),
-        )
-        video_source.open()
+        print(json.dumps({"event_type": "api_only_mode_enabled"}))
 
     app.state.config = config
+    app.state.api_only_mode = api_only_mode
     app.state.runtime_backend = backend
     app.state.runtime = runtime
     app.state.video_source = video_source
@@ -179,18 +198,22 @@ async def lifespan(app: FastAPI):
     app.state.stream_gate = StreamClientGate(max_clients=max_stream_clients)
 
     behavior_cfg = config.get("behavior_agent", {}) or {}
-    if bool(behavior_cfg.get("enabled", False)):
+    if bool(behavior_cfg.get("enabled", False)) and not api_only_mode:
         behavior_service = BehaviorAgentService.from_config(config=config, project_root=PROJECT_ROOT)
         behavior_service.start()
         app.state.behavior_agent_service = behavior_service
+    elif bool(behavior_cfg.get("enabled", False)) and api_only_mode:
+        print(json.dumps({"event_type": "behavior_agent_skipped_api_only"}))
 
-    print(json.dumps({"event_type": "app_started"}))
+    print(json.dumps({"event_type": "app_started", "mode": "api_only" if api_only_mode else "full"}))
     try:
         yield
     finally:
         if behavior_service is not None:
             behavior_service.stop()
-        app.state.performance_logger.close()
+        perf_logger = getattr(app.state, "performance_logger", None)
+        if perf_logger is not None:
+            perf_logger.close()
         ingest_manager = getattr(app.state, "violation_ingest", None)
         if ingest_manager is not None:
             ingest_manager.close()
@@ -199,8 +222,9 @@ async def lifespan(app: FastAPI):
             pg_logger.close()
         if app.state.deepstream_runner is not None:
             app.state.deepstream_runner.stop()
-        pipeline.event_writer.close()
-        pipeline.close()
+        if pipeline is not None:
+            pipeline.event_writer.close()
+            pipeline.close()
         if video_source is not None:
             video_source.close()
         print(json.dumps({"event_type": "app_stopped"}))
@@ -211,15 +235,28 @@ app = FastAPI(title="PPE Monitoring", lifespan=lifespan)
 
 @app.get("/health")
 async def health() -> dict:
+    runtime = getattr(app.state, "runtime", None)
     return {
         "status": "ok",
         "backend": getattr(app.state, "runtime_backend", "python"),
-        "provider_info": app.state.runtime.provider_info,
+        "api_only": bool(getattr(app.state, "api_only_mode", False)),
+        "provider_info": getattr(runtime, "provider_info", {}),
     }
 
 
 @app.websocket("/ws/stream")
 async def ws_stream(websocket: WebSocket) -> None:
+    if bool(getattr(app.state, "api_only_mode", False)):
+        await websocket.accept()
+        await websocket.send_json(
+            {
+                "event_type": "stream_disabled",
+                "reason": "api_only_mode_enabled",
+            }
+        )
+        await websocket.close(code=1013, reason="stream_disabled")
+        return
+
     gate = getattr(app.state, "stream_gate", None)
     gate_acquired = False
     if gate is not None:
@@ -558,11 +595,11 @@ async def metrics() -> Response:
         return Response(content="# metrics exporter not initialized\n", media_type="text/plain", status_code=503)
     bridge = getattr(app.state, "jetson_bridge", None)
     snap = bridge.read_snapshot() if bridge is not None else None
+    pipeline = getattr(app.state, "pipeline", None)
+    event_writer = getattr(pipeline, "event_writer", None) if pipeline is not None else None
     exporter.update(
         {},
-        event_stream_dropped=int(getattr(app.state.pipeline.event_writer, "dropped", 0))
-        if hasattr(app.state, "pipeline")
-        else 0,
+        event_stream_dropped=int(getattr(event_writer, "dropped", 0)),
         jetson=snap,
     )
     return Response(content=exporter.render(), media_type=CONTENT_TYPE_LATEST)

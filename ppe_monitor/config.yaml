@@ -6,6 +6,11 @@ video:
 runtime:
   backend: "python"  # options: python, deepstream
 
+service:
+  # When true, start only API endpoints (ROI/DB/status) without loading CV models or opening video source.
+  # You can also override with env: PPE_MONITOR_API_ONLY=1
+  api_only: false
+
 deepstream:
   enabled: false
   # Multi-camera Phase 2:
