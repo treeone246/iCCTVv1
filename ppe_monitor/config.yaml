@@ -161,7 +161,7 @@ association:
   keypoint_conf_floor: 0.30
   held_distance_ratio: 1.2
   held_items: [helmet, goggles, gloves]
-  goggles_face_gate_enabled: true
+  goggles_face_gate_enabled: false
   goggles_face_min_points: 2
   helmet_keypoints: [nose, left_eye, right_eye]
   goggles_keypoints: [left_eye, right_eye]
@@ -398,7 +398,7 @@ face_gate:
   # shadow_mode logs observations without changing decision.
   shadow_mode: true
   # enforce applies gate result to output classification.
-  enforce: true
+  enforce: false
   log_enabled: true
   log_every_n_frames: 10
   # Current backend expects SCRFD ONNX model.
