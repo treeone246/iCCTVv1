@@ -67,11 +67,13 @@ class ViolationPostgresLogger:
         self._conn = None
         self._init_error: str | None = None
         self._last_error: str | None = None
+        self._schema_ensure_warning: str | None = None
         self._last_insert_ts: float = 0.0
         self._inserted_count: int = 0
         self._duplicate_count: int = 0
         self._ingest_batches: int = 0
         self._connect_fail_count: int = 0
+        self._ensure_schema_on_connect = bool(pg_cfg.get("ensure_schema_on_connect", True))
         self._connect_retry_backoff_seconds = max(0.5, float(pg_cfg.get("connect_retry_backoff_seconds", 5.0)))
         self._next_connect_attempt_ts: float = 0.0
         self._last_connect_log_ts: float = 0.0
@@ -95,9 +97,21 @@ class ViolationPostgresLogger:
             raise RuntimeError("db_connect_backoff")
         try:
             self._conn = psycopg.connect(self._dsn, autocommit=True, connect_timeout=3)
-            self._ensure_schema(self._conn)
+            if self._ensure_schema_on_connect:
+                try:
+                    self._ensure_schema(self._conn)
+                    self._schema_ensure_warning = None
+                except Exception as schema_exc:
+                    # Non-fatal: allow writes if table already exists and role has DML grants.
+                    if self._is_schema_permission_error(schema_exc):
+                        self._schema_ensure_warning = (
+                            f"schema_ensure_skipped:{type(schema_exc).__name__}:{str(schema_exc)}"
+                        )
+                    else:
+                        raise
             self._init_error = None
-            self._last_error = None
+            if self._schema_ensure_warning is None:
+                self._last_error = None
             self._next_connect_attempt_ts = 0.0
         except Exception as exc:
             self._connect_fail_count += 1
@@ -105,6 +119,19 @@ class ViolationPostgresLogger:
             self._next_connect_attempt_ts = time.time() + self._connect_retry_backoff_seconds
             raise
         return self._conn
+
+    def _is_schema_permission_error(self, exc: Exception) -> bool:
+        sqlstate = str(getattr(exc, "sqlstate", "")).strip()
+        msg = str(exc).lower()
+        if sqlstate == "42501":
+            return True
+        if "insufficientprivilege" in type(exc).__name__.lower():
+            return True
+        if "must be owner of table" in msg:
+            return True
+        if "permission denied" in msg:
+            return True
+        return False
 
     def _ensure_schema(self, conn) -> None:
         sql = """
@@ -339,6 +366,8 @@ class ViolationPostgresLogger:
             "db_user": self._user,
             "db_password_set": bool(self._password),
             "db_password_source": self._password_source,
+            "ensure_schema_on_connect": bool(self._ensure_schema_on_connect),
+            "schema_ensure_warning": self._schema_ensure_warning,
             "connect_retry_backoff_seconds": float(self._connect_retry_backoff_seconds),
             "next_connect_attempt_ts": float(self._next_connect_attempt_ts),
         }
